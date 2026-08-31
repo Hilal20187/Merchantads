@@ -2,61 +2,74 @@ import os
 import asyncio
 import logging
 import sqlite3
-from contextlib import closing
 
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError, RPCError
+from telethon.tl import types
 
 
 # ============================================================
-# LEX PUBLISHER PRO
-# TEXT ONLY
+# LEX AUTO PUBLISHER PRO
+# ============================================================
 #
-# MAIN GROUP
-#      ↓
-# COPY TEXT
-#      ↓
-# TARGET GROUPS
+# MAIN:
+# -1004333211848
+#
+# TARGET:
+# -1004407774851
+#
+# OWNER:
+# 822007358
+#
+# FUNCTION:
+#
+# MAIN MESSAGE
+#       ↓
+# COPY TO TARGET
 #
 # DELETE MAIN
-#      ↓
-# DELETE ALL COPIES
+#       ↓
+# DELETE COPY
 #
 # EDIT MAIN
-#      ↓
-# EDIT ALL COPIES
+#       ↓
+# EDIT COPY
 #
-# Includes backup deletion monitor.
+# TEXT ONLY
 # ============================================================
 
 
 # ============================================================
-# CONFIG
+# TELEGRAM CREDENTIALS
 # ============================================================
 
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-OWNER_ID = int(os.environ["OWNER_ID"])
 
-# Railway Volume recommended:
-# DB_FILE=/data/lex_publisher.db
+
+# ============================================================
+# FIXED IDs
+# ============================================================
+
+OWNER_ID = 822007358
+
+MAIN_CHAT_ID = -1004333211848
+
+TARGET_CHAT_ID = -1004407774851
+
+
+# Telegram channel ID without -100
+MAIN_CHANNEL_ID = 4333211848
+
+
+# ============================================================
+# DATABASE
+# ============================================================
+
 DB_FILE = os.getenv(
     "DB_FILE",
     "lex_publisher.db"
-)
-
-SESSION_FILE = os.getenv(
-    "SESSION_FILE",
-    "lex_publisher"
-)
-
-# How often the backup deletion monitor checks messages
-DELETE_CHECK_INTERVAL = int(
-    os.getenv(
-        "DELETE_CHECK_INTERVAL",
-        "30"
-    )
 )
 
 
@@ -69,306 +82,179 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
-logger = logging.getLogger("LEX-PUBLISHER")
+logger = logging.getLogger("LEX")
 
 
 # ============================================================
-# DATABASE
+# DATABASE INIT
 # ============================================================
 
-def get_db():
+def init_db():
 
-    return sqlite3.connect(
+    conn = sqlite3.connect(
         DB_FILE,
         timeout=30
     )
 
-
-def init_db():
-
-    with closing(get_db()) as conn:
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )
-        """)
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS targets (
-                chat_id INTEGER PRIMARY KEY,
-                title TEXT,
-                username TEXT,
-                enabled INTEGER DEFAULT 1
-            )
-        """)
+    try:
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS message_map (
+
                 source_chat_id INTEGER NOT NULL,
+
                 source_message_id INTEGER NOT NULL,
+
                 target_chat_id INTEGER NOT NULL,
+
                 target_message_id INTEGER NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+                created_at DATETIME
+                    DEFAULT CURRENT_TIMESTAMP,
 
                 PRIMARY KEY (
                     source_chat_id,
-                    source_message_id,
-                    target_chat_id
+                    source_message_id
                 )
             )
         """)
 
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_source_messages
-            ON message_map (
-                source_chat_id,
-                source_message_id
-            )
-        """)
-
         conn.commit()
 
+    finally:
+
+        conn.close()
+
 
 # ============================================================
-# SETTINGS
+# SAVE MESSAGE MAPPING
 # ============================================================
 
-def set_setting(
-    key,
-    value
+def save_mapping(
+    source_message_id,
+    target_message_id
 ):
 
-    with closing(get_db()) as conn:
+    conn = sqlite3.connect(
+        DB_FILE,
+        timeout=30
+    )
+
+    try:
 
         conn.execute("""
-            INSERT INTO settings (
-                key,
-                value
+            INSERT OR REPLACE INTO message_map (
+
+                source_chat_id,
+
+                source_message_id,
+
+                target_chat_id,
+
+                target_message_id
+
             )
 
-            VALUES (?, ?)
-
-            ON CONFLICT(key)
-            DO UPDATE SET
-                value = excluded.value
+            VALUES (?, ?, ?, ?)
         """, (
-            key,
-            str(value)
+            MAIN_CHAT_ID,
+            source_message_id,
+            TARGET_CHAT_ID,
+            target_message_id
         ))
 
         conn.commit()
 
+    finally:
 
-def get_setting(key):
+        conn.close()
 
-    with closing(get_db()) as conn:
 
-        row = conn.execute(
-            """
-            SELECT value
-            FROM settings
-            WHERE key = ?
-            """,
-            (key,)
-        ).fetchone()
+# ============================================================
+# GET TARGET MESSAGE
+# ============================================================
+
+def get_mapping(
+    source_message_id
+):
+
+    conn = sqlite3.connect(
+        DB_FILE,
+        timeout=30
+    )
+
+    try:
+
+        row = conn.execute("""
+            SELECT target_message_id
+
+            FROM message_map
+
+            WHERE source_chat_id = ?
+
+              AND source_message_id = ?
+
+              AND target_chat_id = ?
+
+        """, (
+            MAIN_CHAT_ID,
+            source_message_id,
+            TARGET_CHAT_ID
+        )).fetchone()
 
         if row:
             return row[0]
 
         return None
 
+    finally:
+
+        conn.close()
+
 
 # ============================================================
-# MAIN GROUP
+# DELETE MAPPING
 # ============================================================
 
-def get_main_id():
+def delete_mapping(
+    source_message_id
+):
 
-    value = get_setting(
-        "main_chat_id"
+    conn = sqlite3.connect(
+        DB_FILE,
+        timeout=30
     )
 
-    if not value:
-        return None
-
     try:
-        return int(value)
-
-    except ValueError:
-        return None
-
-
-# ============================================================
-# TARGET GROUPS
-# ============================================================
-
-def add_target(
-    chat_id,
-    title,
-    username
-):
-
-    with closing(get_db()) as conn:
-
-        conn.execute("""
-            INSERT INTO targets (
-                chat_id,
-                title,
-                username,
-                enabled
-            )
-
-            VALUES (?, ?, ?, 1)
-
-            ON CONFLICT(chat_id)
-            DO UPDATE SET
-                title = excluded.title,
-                username = excluded.username,
-                enabled = 1
-        """, (
-            chat_id,
-            title or "",
-            username or ""
-        ))
-
-        conn.commit()
-
-
-def remove_target(chat_id):
-
-    with closing(get_db()) as conn:
-
-        conn.execute(
-            """
-            DELETE FROM targets
-            WHERE chat_id = ?
-            """,
-            (chat_id,)
-        )
-
-        conn.commit()
-
-
-def get_targets():
-
-    with closing(get_db()) as conn:
-
-        return conn.execute("""
-            SELECT
-                chat_id,
-                title,
-                username
-
-            FROM targets
-
-            WHERE enabled = 1
-
-            ORDER BY rowid ASC
-        """).fetchall()
-
-
-# ============================================================
-# MESSAGE MAPPING
-# ============================================================
-
-def save_mapping(
-    source_chat_id,
-    source_message_id,
-    target_chat_id,
-    target_message_id
-):
-
-    with closing(get_db()) as conn:
-
-        conn.execute("""
-            INSERT OR REPLACE INTO message_map (
-                source_chat_id,
-                source_message_id,
-                target_chat_id,
-                target_message_id
-            )
-
-            VALUES (?, ?, ?, ?)
-        """, (
-            source_chat_id,
-            source_message_id,
-            target_chat_id,
-            target_message_id
-        ))
-
-        conn.commit()
-
-
-def get_mappings(
-    source_chat_id,
-    source_message_id
-):
-
-    with closing(get_db()) as conn:
-
-        return conn.execute("""
-            SELECT
-                target_chat_id,
-                target_message_id
-
-            FROM message_map
-
-            WHERE source_chat_id = ?
-              AND source_message_id = ?
-        """, (
-            source_chat_id,
-            source_message_id
-        )).fetchall()
-
-
-def delete_mappings(
-    source_chat_id,
-    source_message_id
-):
-
-    with closing(get_db()) as conn:
 
         conn.execute("""
             DELETE FROM message_map
 
             WHERE source_chat_id = ?
+
               AND source_message_id = ?
+
+              AND target_chat_id = ?
+
         """, (
-            source_chat_id,
-            source_message_id
+            MAIN_CHAT_ID,
+            source_message_id,
+            TARGET_CHAT_ID
         ))
 
         conn.commit()
 
+    finally:
 
-def get_known_source_messages():
-
-    with closing(get_db()) as conn:
-
-        return conn.execute("""
-            SELECT DISTINCT
-                source_message_id
-
-            FROM message_map
-
-            WHERE source_chat_id = ?
-
-            ORDER BY source_message_id DESC
-
-            LIMIT 100
-        """, (
-            get_main_id(),
-        )).fetchall()
+        conn.close()
 
 
 # ============================================================
-# TELEGRAM CLIENT
+# TELETHON CLIENT
 # ============================================================
 
 client = TelegramClient(
-    SESSION_FILE,
+    "lex_publisher",
     API_ID,
     API_HASH
 )
@@ -378,7 +264,7 @@ BOT_ID = None
 
 
 # ============================================================
-# OWNER CHECK
+# CHECK OWNER
 # ============================================================
 
 def is_owner(event):
@@ -387,230 +273,397 @@ def is_owner(event):
 
 
 # ============================================================
-# FLOOD WAIT HELPER
+# SEND MESSAGE
 # ============================================================
 
-async def sleep_flood(e):
+async def send_to_target(
+    message
+):
 
-    seconds = int(
-        getattr(
-            e,
-            "seconds",
-            5
-        )
-    )
+    text = message.raw_text or ""
 
-    logger.warning(
-        "FloodWait: sleeping %s seconds",
-        seconds
-    )
+    if not text.strip():
+        return None
 
-    await asyncio.sleep(
-        seconds + 1
-    )
+    try:
 
-
-# ============================================================
-# /start
-# ============================================================
-
-@client.on(
-    events.NewMessage(
-        pattern=r"^/start$"
-    )
-)
-async def start_handler(event):
-
-    if not is_owner(event):
-        return
-
-    await event.reply(
-        "🤖 LEX PUBLISHER PRO\n\n"
-
-        "📌 نظام نشر النصوص\n\n"
-
-        "/setmain\n"
-        "تعيين القروب الرئيسي\n\n"
-
-        "/addgroup\n"
-        "إضافة القروب الحالي\n\n"
-
-        "/removegroup\n"
-        "إزالة القروب الحالي\n\n"
-
-        "/groups\n"
-        "عرض القروبات\n\n"
-
-        "/status\n"
-        "حالة البوت"
-    )
-
-
-# ============================================================
-# /setmain
-# ============================================================
-
-@client.on(
-    events.NewMessage(
-        pattern=r"^/setmain$"
-    )
-)
-async def setmain_handler(event):
-
-    if not is_owner(event):
-        return
-
-    chat = await event.get_chat()
-
-    set_setting(
-        "main_chat_id",
-        chat.id
-    )
-
-    logger.info(
-        "MAIN SET: %s",
-        chat.id
-    )
-
-    await event.reply(
-        "✅ تم تعيين هذا القروب كـ MAIN.\n\n"
-        f"🆔 `{chat.id}`"
-    )
-
-
-# ============================================================
-# /addgroup
-# ============================================================
-
-@client.on(
-    events.NewMessage(
-        pattern=r"^/addgroup$"
-    )
-)
-async def addgroup_handler(event):
-
-    if not is_owner(event):
-        return
-
-    chat = await event.get_chat()
-
-    main = get_main_id()
-
-    if main == chat.id:
-
-        await event.reply(
-            "❌ هذا القروب هو MAIN."
+        sent = await client.send_message(
+            TARGET_CHAT_ID,
+            text,
+            formatting_entities=message.entities
         )
 
-        return
+        return sent.id
 
-    title = getattr(
-        chat,
-        "title",
-        ""
-    )
+    except FloodWaitError as e:
 
-    username = getattr(
-        chat,
-        "username",
-        None
-    )
-
-    add_target(
-        chat.id,
-        title,
-        username
-    )
-
-    logger.info(
-        "TARGET ADDED: %s | %s",
-        chat.id,
-        title
-    )
-
-    await event.reply(
-        "✅ تمت إضافة القروب للنشر.\n\n"
-        f"📌 {title or 'بدون اسم'}\n"
-        f"🆔 `{chat.id}`"
-    )
-
-
-# ============================================================
-# /removegroup
-# ============================================================
-
-@client.on(
-    events.NewMessage(
-        pattern=r"^/removegroup$"
-    )
-)
-async def removegroup_handler(event):
-
-    if not is_owner(event):
-        return
-
-    chat = await event.get_chat()
-
-    remove_target(
-        chat.id
-    )
-
-    await event.reply(
-        "✅ تم حذف القروب من قائمة النشر."
-    )
-
-
-# ============================================================
-# /groups
-# ============================================================
-
-@client.on(
-    events.NewMessage(
-        pattern=r"^/groups$"
-    )
-)
-async def groups_handler(event):
-
-    if not is_owner(event):
-        return
-
-    targets = get_targets()
-
-    if not targets:
-
-        await event.reply(
-            "📭 لا توجد قروبات مستهدفة."
+        logger.warning(
+            "FloodWait: %s seconds",
+            e.seconds
         )
 
-        return
-
-    text = (
-        "📋 القروبات المستهدفة:\n\n"
-    )
-
-    for i, (
-        chat_id,
-        title,
-        username
-    ) in enumerate(
-        targets,
-        1
-    ):
-
-        text += (
-            f"{i}. {title or 'بدون اسم'}\n"
-            f"🆔 `{chat_id}`\n"
+        await asyncio.sleep(
+            e.seconds + 1
         )
 
-        if username:
-            text += (
-                f"🔗 @{username}\n"
+        try:
+
+            sent = await client.send_message(
+                TARGET_CHAT_ID,
+                text,
+                formatting_entities=message.entities
             )
 
-        text += "\n"
+            return sent.id
 
-    await event.reply(
-        text
+        except Exception as retry_error:
+
+            logger.error(
+                "SEND RETRY ERROR: %s",
+                retry_error
+            )
+
+            return None
+
+    except RPCError as e:
+
+        logger.error(
+            "SEND TELEGRAM ERROR: %s",
+            e
+        )
+
+        return None
+
+    except Exception as e:
+
+        logger.exception(
+            "SEND ERROR: %s",
+            e
+        )
+
+        return None
+
+
+# ============================================================
+# MAIN -> TARGET
+# ============================================================
+
+@client.on(events.NewMessage)
+async def main_message_handler(event):
+
+    # Only MAIN
+    if event.chat_id != MAIN_CHAT_ID:
+        return
+
+    message = event.message
+
+    # Ignore bot's own messages
+    if BOT_ID is not None:
+
+        if event.sender_id == BOT_ID:
+            return
+
+    text = message.raw_text or ""
+
+    # Ignore commands
+    if text.startswith("/"):
+        return
+
+    # TEXT ONLY
+    if not text.strip():
+        return
+
+    logger.info(
+        "NEW MAIN MESSAGE | id=%s",
+        message.id
+    )
+
+    # Send to target
+    target_message_id = await send_to_target(
+        message
+    )
+
+    if target_message_id is None:
+
+        logger.error(
+            "COPY FAILED | MAIN:%s",
+            message.id
+        )
+
+        return
+
+    # Save relation
+    save_mapping(
+        message.id,
+        target_message_id
+    )
+
+    logger.info(
+        "COPIED | MAIN:%s -> TARGET:%s",
+        message.id,
+        target_message_id
+    )
+
+
+# ============================================================
+# DELETE TARGET COPY
+# ============================================================
+
+async def delete_copy(
+    source_message_id
+):
+
+    target_message_id = get_mapping(
+        source_message_id
+    )
+
+    if target_message_id is None:
+
+        logger.warning(
+            "NO MAPPING FOR DELETED MESSAGE | MAIN:%s",
+            source_message_id
+        )
+
+        return
+
+    logger.info(
+        "DELETE SYNC | MAIN:%s -> TARGET:%s",
+        source_message_id,
+        target_message_id
+    )
+
+    try:
+
+        await client.delete_messages(
+            TARGET_CHAT_ID,
+            [target_message_id]
+        )
+
+        logger.info(
+            "TARGET MESSAGE DELETED | TARGET:%s",
+            target_message_id
+        )
+
+        delete_mapping(
+            source_message_id
+        )
+
+    except FloodWaitError as e:
+
+        logger.warning(
+            "DELETE FLOODWAIT: %s seconds",
+            e.seconds
+        )
+
+        await asyncio.sleep(
+            e.seconds + 1
+        )
+
+        try:
+
+            await client.delete_messages(
+                TARGET_CHAT_ID,
+                [target_message_id]
+            )
+
+            logger.info(
+                "TARGET MESSAGE DELETED AFTER RETRY | TARGET:%s",
+                target_message_id
+            )
+
+            delete_mapping(
+                source_message_id
+            )
+
+        except Exception as retry_error:
+
+            logger.error(
+                "DELETE RETRY ERROR: %s",
+                retry_error
+            )
+
+    except RPCError as e:
+
+        logger.error(
+            "DELETE TELEGRAM ERROR: %s",
+            e
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            "DELETE ERROR: %s",
+            e
+        )
+
+
+# ============================================================
+# RAW TELEGRAM DELETE UPDATE
+# ============================================================
+#
+# THIS IS THE IMPORTANT PART
+#
+# Telegram Supergroup deletion:
+#
+# UpdateDeleteChannelMessages
+#
+# contains:
+#
+# channel_id
+# messages
+#
+# We compare channel_id with:
+#
+# 4333211848
+#
+# which belongs to:
+#
+# -1004333211848
+#
+# ============================================================
+
+@client.on(events.Raw)
+async def raw_update_handler(update):
+
+    try:
+
+        # ----------------------------------------------------
+        # SUPERGROUP / CHANNEL
+        # ----------------------------------------------------
+
+        if isinstance(
+            update,
+            types.UpdateDeleteChannelMessages
+        ):
+
+            channel_id = update.channel_id
+
+            deleted_ids = update.messages
+
+            logger.info(
+                "RAW DELETE EVENT | channel_id=%s | ids=%s",
+                channel_id,
+                deleted_ids
+            )
+
+            # Only MAIN
+            if channel_id != MAIN_CHANNEL_ID:
+
+                logger.info(
+                    "DELETE IGNORED | not MAIN"
+                )
+
+                return
+
+            logger.info(
+                "MAIN DELETE DETECTED | ids=%s",
+                deleted_ids
+            )
+
+            for message_id in deleted_ids:
+
+                await delete_copy(
+                    message_id
+                )
+
+                await asyncio.sleep(
+                    0.2
+                )
+
+    except Exception as e:
+
+        logger.exception(
+            "RAW DELETE HANDLER ERROR: %s",
+            e
+        )
+
+
+# ============================================================
+# EDIT COPY
+# ============================================================
+
+async def edit_copy(
+    message
+):
+
+    target_message_id = get_mapping(
+        message.id
+    )
+
+    if target_message_id is None:
+
+        logger.warning(
+            "NO MAPPING FOR EDIT | MAIN:%s",
+            message.id
+        )
+
+        return
+
+    text = message.raw_text or ""
+
+    try:
+
+        await client.edit_message(
+            TARGET_CHAT_ID,
+            target_message_id,
+            text,
+            formatting_entities=message.entities
+        )
+
+        logger.info(
+            "EDIT SYNC | MAIN:%s -> TARGET:%s",
+            message.id,
+            target_message_id
+        )
+
+    except FloodWaitError as e:
+
+        logger.warning(
+            "EDIT FLOODWAIT: %s seconds",
+            e.seconds
+        )
+
+        await asyncio.sleep(
+            e.seconds + 1
+        )
+
+    except RPCError as e:
+
+        logger.error(
+            "EDIT TELEGRAM ERROR: %s",
+            e
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            "EDIT ERROR: %s",
+            e
+        )
+
+
+# ============================================================
+# MAIN MESSAGE EDIT
+# ============================================================
+
+@client.on(events.MessageEdited)
+async def edited_message_handler(event):
+
+    if event.chat_id != MAIN_CHAT_ID:
+        return
+
+    message = event.message
+
+    text = message.raw_text or ""
+
+    if not text.strip():
+        return
+
+    if text.startswith("/"):
+        return
+
+    await edit_copy(
+        message
     )
 
 
@@ -628,529 +681,45 @@ async def status_handler(event):
     if not is_owner(event):
         return
 
-    main = get_main_id()
-    targets = get_targets()
-
     await event.reply(
-        "🤖 LEX PUBLISHER PRO\n\n"
+        "🤖 LEX AUTO PUBLISHER PRO\n\n"
 
         "🟢 STATUS: ONLINE\n\n"
 
-        f"🏠 MAIN:\n"
-        f"`{main or 'غير محدد'}`\n\n"
+        f"👤 OWNER:\n"
+        f"`{OWNER_ID}`\n\n"
 
-        f"📤 TARGETS: `{len(targets)}`\n\n"
+        f"🏠 MAIN:\n"
+        f"`{MAIN_CHAT_ID}`\n\n"
+
+        f"📤 TARGET:\n"
+        f"`{TARGET_CHAT_ID}`\n\n"
 
         "📝 MODE: TEXT ONLY\n"
+        "📤 AUTO COPY: ON\n"
         "🗑 DELETE SYNC: ON\n"
         "✏️ EDIT SYNC: ON\n"
-        "🔎 DELETE WATCHDOG: ON"
+        "⚡ RAW DELETE: ON"
     )
 
 
 # ============================================================
-# SEND TEXT COPY
+# /id
 # ============================================================
 
-async def send_copy(
-    target_chat_id,
-    message
-):
-
-    text = message.raw_text or ""
-
-    if not text.strip():
-        return None
-
-    try:
-
-        copied = await client.send_message(
-            target_chat_id,
-            text,
-            formatting_entities=message.entities
-        )
-
-        return copied.id
-
-    except FloodWaitError as e:
-
-        await sleep_flood(e)
-
-        try:
-
-            copied = await client.send_message(
-                target_chat_id,
-                text,
-                formatting_entities=message.entities
-            )
-
-            return copied.id
-
-        except Exception as retry_error:
-
-            logger.error(
-                "RETRY SEND FAILED: %s",
-                retry_error
-            )
-
-            return None
-
-    except RPCError as e:
-
-        logger.error(
-            "SEND RPC ERROR [%s]: %s",
-            target_chat_id,
-            e
-        )
-
-        return None
-
-    except Exception as e:
-
-        logger.exception(
-            "SEND ERROR [%s]: %s",
-            target_chat_id,
-            e
-        )
-
-        return None
-
-
-# ============================================================
-# MAIN -> TARGETS
-# ============================================================
-
-@client.on(events.NewMessage)
-async def publish_handler(event):
-
-    main = get_main_id()
-
-    if not main:
-        return
-
-    # Must be MAIN
-    if event.chat_id != main:
-        return
-
-    # Ignore our own bot messages
-    if BOT_ID is not None:
-        if event.sender_id == BOT_ID:
-            return
-
-    message = event.message
-
-    text = message.raw_text or ""
-
-    # Ignore commands
-    if text.startswith("/"):
-        return
-
-    # TEXT ONLY
-    if not text.strip():
-        return
-
-    targets = get_targets()
-
-    if not targets:
-        logger.warning(
-            "MAIN message received but no targets."
-        )
-
-        return
-
-    logger.info(
-        "NEW MAIN MESSAGE | id=%s",
-        message.id
+@client.on(
+    events.NewMessage(
+        pattern=r"^/id$"
     )
+)
+async def id_handler(event):
 
-    for (
-        target_chat_id,
-        title,
-        username
-    ) in targets:
-
-        copied_id = await send_copy(
-            target_chat_id,
-            message
-        )
-
-        if copied_id is not None:
-
-            save_mapping(
-                main,
-                message.id,
-                target_chat_id,
-                copied_id
-            )
-
-            logger.info(
-                "COPIED | MAIN:%s -> TARGET:%s:%s",
-                message.id,
-                target_chat_id,
-                copied_id
-            )
-
-        else:
-
-            logger.error(
-                "COPY FAILED | target=%s",
-                target_chat_id
-            )
-
-        # Small delay between groups
-        await asyncio.sleep(
-            0.3
-        )
-
-
-# ============================================================
-# DELETE FUNCTION
-# ============================================================
-
-async def delete_copies(
-    source_message_id
-):
-
-    main = get_main_id()
-
-    if not main:
+    if not is_owner(event):
         return
 
-    mappings = get_mappings(
-        main,
-        source_message_id
+    await event.reply(
+        f"🆔 CHAT ID:\n`{event.chat_id}`"
     )
-
-    if not mappings:
-
-        logger.info(
-            "NO MAPPING | source=%s",
-            source_message_id
-        )
-
-        return
-
-    logger.info(
-        "DELETE SYNC | source=%s | copies=%s",
-        source_message_id,
-        len(mappings)
-    )
-
-    for (
-        target_chat_id,
-        target_message_id
-    ) in mappings:
-
-        try:
-
-            await client.delete_messages(
-                target_chat_id,
-                [target_message_id]
-            )
-
-            logger.info(
-                "COPY DELETED | target=%s | msg=%s",
-                target_chat_id,
-                target_message_id
-            )
-
-        except FloodWaitError as e:
-
-            await sleep_flood(e)
-
-            try:
-
-                await client.delete_messages(
-                    target_chat_id,
-                    [target_message_id]
-                )
-
-            except Exception as retry_error:
-
-                logger.error(
-                    "DELETE RETRY FAILED: %s",
-                    retry_error
-                )
-
-        except RPCError as e:
-
-            logger.error(
-                "DELETE RPC ERROR | target=%s | %s",
-                target_chat_id,
-                e
-            )
-
-        except Exception as e:
-
-            logger.exception(
-                "DELETE ERROR | target=%s | %s",
-                target_chat_id,
-                e
-            )
-
-        await asyncio.sleep(
-            0.2
-        )
-
-    delete_mappings(
-        main,
-        source_message_id
-    )
-
-
-# ============================================================
-# TELEGRAM DELETE EVENT
-# ============================================================
-
-@client.on(events.MessageDeleted)
-async def message_deleted_handler(event):
-
-    logger.info(
-        "DELETE EVENT RECEIVED | chat_id=%s | ids=%s",
-        event.chat_id,
-        event.deleted_ids
-    )
-
-    main = get_main_id()
-
-    if not main:
-        return
-
-    # IMPORTANT:
-    # Do NOT rely on event.chat_id.
-    #
-    # We identify MAIN messages through the database mapping.
-    # This also handles situations where Telegram doesn't
-    # provide chat_id in the deletion update.
-
-    for message_id in event.deleted_ids:
-
-        mappings = get_mappings(
-            main,
-            message_id
-        )
-
-        if not mappings:
-            continue
-
-        await delete_copies(
-            message_id
-        )
-
-
-# ============================================================
-# EDIT FUNCTION
-# ============================================================
-
-async def edit_copies(
-    source_message
-):
-
-    main = get_main_id()
-
-    if not main:
-        return
-
-    mappings = get_mappings(
-        main,
-        source_message.id
-    )
-
-    if not mappings:
-        return
-
-    text = source_message.raw_text or ""
-
-    logger.info(
-        "EDIT SYNC | source=%s | copies=%s",
-        source_message.id,
-        len(mappings)
-    )
-
-    for (
-        target_chat_id,
-        target_message_id
-    ) in mappings:
-
-        try:
-
-            await client.edit_message(
-                target_chat_id,
-                target_message_id,
-                text,
-                formatting_entities=source_message.entities
-            )
-
-            logger.info(
-                "COPY EDITED | target=%s | msg=%s",
-                target_chat_id,
-                target_message_id
-            )
-
-        except FloodWaitError as e:
-
-            await sleep_flood(e)
-
-        except RPCError as e:
-
-            logger.error(
-                "EDIT RPC ERROR | %s",
-                e
-            )
-
-        except Exception as e:
-
-            logger.exception(
-                "EDIT ERROR | %s",
-                e
-            )
-
-        await asyncio.sleep(
-            0.2
-        )
-
-
-# ============================================================
-# TELEGRAM EDIT EVENT
-# ============================================================
-
-@client.on(events.MessageEdited)
-async def message_edited_handler(event):
-
-    main = get_main_id()
-
-    if not main:
-        return
-
-    if event.chat_id != main:
-        return
-
-    message = event.message
-
-    # Ignore commands
-    text = message.raw_text or ""
-
-    if text.startswith("/"):
-        return
-
-    await edit_copies(
-        message
-    )
-
-
-# ============================================================
-# BACKUP DELETE WATCHDOG
-# ============================================================
-#
-# This is the important extra protection.
-#
-# If Telegram sends MessageDeleted:
-#       delete immediately
-#
-# If Telegram DOES NOT send it:
-#       this monitor checks known MAIN messages.
-#
-# If Telegram returns None for the source message:
-#       it was deleted
-#       ↓
-#       delete all copies
-#
-# ============================================================
-
-async def deletion_watchdog():
-
-    await asyncio.sleep(
-        10
-    )
-
-    while True:
-
-        try:
-
-            main = get_main_id()
-
-            if not main:
-
-                await asyncio.sleep(
-                    DELETE_CHECK_INTERVAL
-                )
-
-                continue
-
-            rows = get_known_source_messages()
-
-            if not rows:
-
-                await asyncio.sleep(
-                    DELETE_CHECK_INTERVAL
-                )
-
-                continue
-
-            source_ids = [
-                row[0]
-                for row in rows
-            ]
-
-            logger.debug(
-                "WATCHDOG CHECK | %s messages",
-                len(source_ids)
-            )
-
-            # Telegram allows requesting multiple IDs.
-            messages = await client.get_messages(
-                main,
-                ids=source_ids
-            )
-
-            # For a list request, Telethon returns a list.
-            if not isinstance(
-                messages,
-                list
-            ):
-                messages = [
-                    messages
-                ]
-
-            for index, message in enumerate(
-                messages
-            ):
-
-                if message is not None:
-                    continue
-
-                source_id = source_ids[index]
-
-                logger.warning(
-                    "WATCHDOG FOUND DELETED MESSAGE | %s",
-                    source_id
-                )
-
-                await delete_copies(
-                    source_id
-                )
-
-        except FloodWaitError as e:
-
-            await sleep_flood(e)
-
-        except RPCError as e:
-
-            logger.error(
-                "WATCHDOG RPC ERROR: %s",
-                e
-            )
-
-        except Exception as e:
-
-            logger.exception(
-                "WATCHDOG ERROR: %s",
-                e
-            )
-
-        await asyncio.sleep(
-            DELETE_CHECK_INTERVAL
-        )
 
 
 # ============================================================
@@ -1164,15 +733,35 @@ async def main():
     init_db()
 
     logger.info(
-        "===================================="
+        "=========================================="
     )
 
     logger.info(
-        "LEX PUBLISHER PRO STARTING"
+        "LEX AUTO PUBLISHER PRO"
     )
 
     logger.info(
-        "===================================="
+        "=========================================="
+    )
+
+    logger.info(
+        "OWNER     : %s",
+        OWNER_ID
+    )
+
+    logger.info(
+        "MAIN      : %s",
+        MAIN_CHAT_ID
+    )
+
+    logger.info(
+        "TARGET    : %s",
+        TARGET_CHAT_ID
+    )
+
+    logger.info(
+        "CHANNEL ID: %s",
+        MAIN_CHANNEL_ID
     )
 
     await client.start(
@@ -1184,12 +773,12 @@ async def main():
     BOT_ID = me.id
 
     logger.info(
-        "BOT ID: %s",
+        "BOT ID    : %s",
         BOT_ID
     )
 
     logger.info(
-        "BOT USERNAME: @%s",
+        "USERNAME  : @%s",
         getattr(
             me,
             "username",
@@ -1198,46 +787,11 @@ async def main():
     )
 
     logger.info(
-        "MAIN ID: %s",
-        get_main_id()
+        "STATUS    : ONLINE"
     )
 
     logger.info(
-        "TARGETS: %s",
-        len(get_targets())
-    )
-
-    logger.info(
-        "DELETE WATCHDOG: %s seconds",
-        DELETE_CHECK_INTERVAL
-    )
-
-    print()
-    print("====================================")
-    print("       LEX PUBLISHER PRO")
-    print("====================================")
-    print(f"BOT ID  : {BOT_ID}")
-    print(
-        f"USERNAME: @{getattr(me, 'username', '')}"
-    )
-    print(
-        f"MAIN    : {get_main_id()}"
-    )
-    print(
-        f"TARGETS : {len(get_targets())}"
-    )
-    print(
-        f"DELETE CHECK: {DELETE_CHECK_INTERVAL}s"
-    )
-    print(
-        "STATUS  : ONLINE"
-    )
-    print("====================================")
-    print()
-
-    # Start backup monitor
-    asyncio.create_task(
-        deletion_watchdog()
+        "=========================================="
     )
 
     await client.run_until_disconnected()
@@ -1258,5 +812,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
 
         logger.info(
-            "LEX Publisher stopped."
+            "LEX STOPPED"
     ) 
