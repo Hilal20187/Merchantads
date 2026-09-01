@@ -260,7 +260,7 @@ async def run_with_retry(func, *args, **kwargs):
 # COPY MESSAGE TO ONE TARGET
 # ============================================================
 
-async def copy_to_target(message, target_chat_id):
+async def copy_to_target(message, target_chat_id, reply_to=None):
 
     text = message.raw_text or ""
 
@@ -271,7 +271,8 @@ async def copy_to_target(message, target_chat_id):
         client.send_message,
         target_chat_id,
         text,
-        formatting_entities=message.entities
+        formatting_entities=message.entities,
+        reply_to=reply_to
     )
 
     if sent is None:
@@ -291,13 +292,35 @@ async def publish_message(message):
         message.id
     )
 
+    # إذا الرسالة الجديدة هي رد على رسالة قديمة منشورة قبل،
+    # نجيبو الـ mappings تاعها باش نردو بنفس الطريقة فكل مجموعة مستهدفة
+    reply_mappings = {}
+
+    if message.reply_to_msg_id:
+
+        rows = get_mappings(message.reply_to_msg_id)
+
+        reply_mappings = {
+            target_chat_id: target_message_id
+            for target_chat_id, target_message_id in rows
+        }
+
+        if reply_mappings:
+
+            logger.info(
+                "REPLY DETECTED | SOURCE=%s -> REPLYING TO SOURCE=%s",
+                message.id,
+                message.reply_to_msg_id
+            )
+
     success = 0
 
     for target_chat_id in TARGET_CHAT_IDS:
 
         target_message_id = await copy_to_target(
             message,
-            target_chat_id
+            target_chat_id,
+            reply_to=reply_mappings.get(target_chat_id)
         )
 
         if target_message_id is None:
@@ -721,4 +744,3 @@ if __name__ == "__main__":
         logger.info(
             "LEX STOPPED"
         )
- 
