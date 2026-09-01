@@ -18,8 +18,16 @@ API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
-# صاحب البوت
-OWNER_ID = int(os.environ["OWNER_ID"])
+# صاحب البوت + الأصدقاء المسموح لهم (IDs مفصولة بفاصلة فـ OWNER_ID)
+# مثال فـ Railway Variables: OWNER_ID=822007358,111111111,222222222
+ALLOWED_USER_IDS = [
+    int(x.strip())
+    for x in os.environ["OWNER_ID"].split(",")
+    if x.strip()
+]
+
+def is_allowed(user_id):
+    return user_id in ALLOWED_USER_IDS
 
 # ============================================================
 # SOURCE GROUP
@@ -524,7 +532,7 @@ async def source_deleted_message(event):
 )
 async def del_handler(event):
 
-    if event.sender_id != OWNER_ID:
+    if not is_allowed(event.sender_id):
         return
 
     if not event.is_reply:
@@ -598,13 +606,15 @@ async def del_handler(event):
 )
 async def status_handler(event):
 
-    if event.sender_id != OWNER_ID:
+    if not is_allowed(event.sender_id):
         return
 
     await event.reply(
         "🤖 LEX AUTO PUBLISHER PRO\n\n"
         "🟢 STATUS: ONLINE\n\n"
-        f"👤 OWNER:\n`{OWNER_ID}`\n\n"
+        f"👤 ALLOWED USERS:\n"
+        + "\n".join(f"`{uid}`" for uid in ALLOWED_USER_IDS)
+        + "\n\n"
         f"🏠 SOURCE:\n`{SOURCE_CHAT_ID}`\n\n"
         "📤 TARGETS:\n"
         + "\n".join(
@@ -630,7 +640,7 @@ async def status_handler(event):
 )
 async def id_handler(event):
 
-    if event.sender_id != OWNER_ID:
+    if not is_allowed(event.sender_id):
         return
 
     await event.reply(
