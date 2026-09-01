@@ -513,6 +513,80 @@ async def source_deleted_message(event):
 
 
 # ============================================================
+# /del - حذف يدوي (رد على الرسالة اللي تحب تحذفها)
+# ============================================================
+
+@client.on(
+    events.NewMessage(
+        chats=SOURCE_CHAT_ID,
+        pattern=r"^/del$"
+    )
+)
+async def del_handler(event):
+
+    if event.sender_id != OWNER_ID:
+        return
+
+    if not event.is_reply:
+
+        await event.reply(
+            "⚠️ خاصك ترد (Reply) على الرسالة اللي تحب تحذفها، وتكتب /del"
+        )
+
+        return
+
+    replied = await event.get_reply_message()
+
+    source_message_id = replied.id
+
+    mappings = get_mappings(source_message_id)
+
+    if not mappings:
+
+        await event.reply(
+            f"❌ ما لقيتش نسخ لهاذي الرسالة (id={source_message_id})."
+        )
+
+        return
+
+    deleted_count = 0
+
+    for target_chat_id, target_message_id in mappings:
+
+        result = await run_with_retry(
+            client.delete_messages,
+            target_chat_id,
+            [target_message_id]
+        )
+
+        if result is not None:
+            deleted_count += 1
+
+        await asyncio.sleep(0.2)
+
+    delete_mappings(source_message_id)
+
+    # نحذفو الرسالة الأصلية زادة من المجموعة المخصصة
+    try:
+        await client.delete_messages(SOURCE_CHAT_ID, [source_message_id])
+    except Exception as e:
+        logger.warning("ما قدرتش نحذف الرسالة الأصلية: %s", e)
+
+    # نحذفو أمر /del نفسه
+    try:
+        await event.delete()
+    except Exception:
+        pass
+
+    logger.info(
+        "MANUAL DELETE | SOURCE=%s | %s/%s TARGETS",
+        source_message_id,
+        deleted_count,
+        len(mappings)
+    )
+
+
+# ============================================================
 # /status
 # ============================================================
 
@@ -637,3 +711,4 @@ if __name__ == "__main__":
         logger.info(
             "LEX STOPPED"
         )
+ 
