@@ -17,7 +17,6 @@ API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
-# اسم أو معرف البوت للتمييز في اللوغات
 BOT_NAME = os.getenv("BOT_NAME", "BOT_2")
 
 # ============================================================
@@ -41,11 +40,17 @@ def is_allowed(user_id):
 
 SOURCE_CHAT_ID = int(os.environ["SOURCE_CHAT_ID"])
 
-# قناة إضافية: النشر منها مسموح فقط للقناة الخاصة بهذا الشخص
+# ============================================================
+# SPECIAL CHANNELS
+#
+# channel_id : owner_user_id
+# ============================================================
+
 SPECIAL_CHANNELS = {
     -1002239341307: 5578623360,
     -1002895996910: 1760181851,
 }
+
 
 TARGET_CHAT_IDS = [
     int(x.strip())
@@ -53,14 +58,24 @@ TARGET_CHAT_IDS = [
     if x.strip()
 ]
 
+
 # ============================================================
-# DATABASE (مستقلة خاصة بالبوت الثاني)
+# DATABASE
+# ============================================================
+#
+# نفس قاعدة البيانات المطلوبة:
+# lex_publisher.db
+#
+# ويمكن تغييرها من Environment Variable:
+# DB_FILE=lex_publisher.db
+#
 # ============================================================
 
 DB_FILE = os.getenv(
     "DB_FILE",
-    "lex_publisher_2.db"
+    "lex_publisher.db"
 )
+
 
 # ============================================================
 # LOGGING
@@ -80,6 +95,7 @@ logger = logging.getLogger(BOT_NAME)
 
 def init_db():
     conn = sqlite3.connect(DB_FILE, timeout=30)
+
     try:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS message_map (
@@ -88,6 +104,7 @@ def init_db():
                 target_chat_id INTEGER NOT NULL,
                 target_message_id INTEGER NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
                 PRIMARY KEY (
                     source_chat_id,
                     source_message_id,
@@ -95,13 +112,26 @@ def init_db():
                 )
             )
         """)
+
         conn.commit()
+
     finally:
         conn.close()
 
 
-def save_mapping(source_message_id, target_chat_id, target_message_id, source_chat_id=SOURCE_CHAT_ID):
+# ============================================================
+# SAVE MAPPING
+# ============================================================
+
+def save_mapping(
+    source_message_id,
+    target_chat_id,
+    target_message_id,
+    source_chat_id=SOURCE_CHAT_ID
+):
+
     conn = sqlite3.connect(DB_FILE, timeout=30)
+
     try:
         conn.execute("""
             INSERT OR REPLACE INTO message_map (
@@ -117,38 +147,63 @@ def save_mapping(source_message_id, target_chat_id, target_message_id, source_ch
             target_chat_id,
             target_message_id
         ))
+
         conn.commit()
+
     finally:
         conn.close()
 
 
-def get_mappings(source_message_id, source_chat_id=SOURCE_CHAT_ID):
+# ============================================================
+# GET MAPPINGS
+# ============================================================
+
+def get_mappings(
+    source_message_id,
+    source_chat_id=SOURCE_CHAT_ID
+):
+
     conn = sqlite3.connect(DB_FILE, timeout=30)
+
     try:
         return conn.execute("""
             SELECT target_chat_id, target_message_id
             FROM message_map
-            WHERE source_chat_id = ? AND source_message_id = ?
+            WHERE source_chat_id = ?
+              AND source_message_id = ?
             ORDER BY target_chat_id
         """, (
             source_chat_id,
             source_message_id
         )).fetchall()
+
     finally:
         conn.close()
 
 
-def delete_mappings(source_message_id, source_chat_id=SOURCE_CHAT_ID):
+# ============================================================
+# DELETE MAPPINGS
+# ============================================================
+
+def delete_mappings(
+    source_message_id,
+    source_chat_id=SOURCE_CHAT_ID
+):
+
     conn = sqlite3.connect(DB_FILE, timeout=30)
+
     try:
         conn.execute("""
             DELETE FROM message_map
-            WHERE source_chat_id = ? AND source_message_id = ?
+            WHERE source_chat_id = ?
+              AND source_message_id = ?
         """, (
             source_chat_id,
             source_message_id
         ))
+
         conn.commit()
+
     finally:
         conn.close()
 
@@ -171,22 +226,45 @@ BOT_ID = None
 # ============================================================
 
 async def run_with_retry(func, *args, **kwargs):
+
     for attempt in range(3):
+
         try:
             return await func(*args, **kwargs)
+
         except FloodWaitError as e:
-            logger.warning("FloodWait: %s seconds", e.seconds)
+
+            logger.warning(
+                "FloodWait: %s seconds",
+                e.seconds
+            )
+
             await asyncio.sleep(e.seconds + 1)
+
         except RPCError as e:
-            logger.error("Telegram RPC error: %s", e)
+
+            logger.error(
+                "Telegram RPC error: %s",
+                e
+            )
+
             if attempt >= 2:
                 return None
+
             await asyncio.sleep(2)
+
         except Exception as e:
-            logger.exception("Operation error: %s", e)
+
+            logger.exception(
+                "Operation error: %s",
+                e
+            )
+
             if attempt >= 2:
                 return None
+
             await asyncio.sleep(2)
+
     return None
 
 
@@ -194,7 +272,12 @@ async def run_with_retry(func, *args, **kwargs):
 # SEND MESSAGE
 # ============================================================
 
-async def send_to_target(message, target_chat_id, reply_to=None):
+async def send_to_target(
+    message,
+    target_chat_id,
+    reply_to=None
+):
+
     text = message.raw_text or ""
 
     if not text.strip():
@@ -205,8 +288,14 @@ async def send_to_target(message, target_chat_id, reply_to=None):
     }
 
     if reply_to is not None:
+
         kwargs["reply_to"] = reply_to
-        logger.info("REPLY SEND | TARGET=%s | REPLY_TO=%s", target_chat_id, reply_to)
+
+        logger.info(
+            "REPLY SEND | TARGET=%s | REPLY_TO=%s",
+            target_chat_id,
+            reply_to
+        )
 
     sent = await run_with_retry(
         client.send_message,
@@ -225,31 +314,80 @@ async def send_to_target(message, target_chat_id, reply_to=None):
 # PUBLISH MESSAGE
 # ============================================================
 
-async def publish_message(message, source_chat_id=SOURCE_CHAT_ID):
-    logger.info("PUBLISH SOURCE MESSAGE: %s", message.id)
+async def publish_message(
+    message,
+    source_chat_id=SOURCE_CHAT_ID
+):
+
+    logger.info(
+        "PUBLISH SOURCE MESSAGE: %s | SOURCE=%s",
+        message.id,
+        source_chat_id
+    )
+
+    # --------------------------------------------------------
+    # Detect reply
+    # --------------------------------------------------------
 
     parent_source_id = None
+
     if message.reply_to_msg_id:
+
         parent_source_id = message.reply_to_msg_id
-        logger.info("SOURCE REPLY DETECTED | MESSAGE=%s | PARENT=%s", message.id, parent_source_id)
+
+        logger.info(
+            "SOURCE REPLY DETECTED | MESSAGE=%s | PARENT=%s",
+            message.id,
+            parent_source_id
+        )
+
+    # --------------------------------------------------------
+    # Find parent mappings
+    # --------------------------------------------------------
 
     parent_mappings = {}
+
     if parent_source_id is not None:
-        rows = get_mappings(parent_source_id, source_chat_id)
+
+        rows = get_mappings(
+            parent_source_id,
+            source_chat_id
+        )
+
         parent_mappings = {
             int(target_chat_id): int(target_message_id)
             for target_chat_id, target_message_id in rows
         }
-        logger.info("PARENT MAPPINGS FOUND: %s", parent_mappings)
+
+        logger.info(
+            "PARENT MAPPINGS FOUND: %s",
+            parent_mappings
+        )
+
+    # --------------------------------------------------------
+    # Publish to all targets
+    # --------------------------------------------------------
 
     success = 0
 
     for target_chat_id in TARGET_CHAT_IDS:
-        target_chat_id = int(target_chat_id)
-        reply_to = parent_mappings.get(target_chat_id)
 
-        if parent_source_id is not None and reply_to is None:
-            logger.warning("NO PARENT MAPPING | SOURCE_PARENT=%s | TARGET=%s", parent_source_id, target_chat_id)
+        target_chat_id = int(target_chat_id)
+
+        reply_to = parent_mappings.get(
+            target_chat_id
+        )
+
+        if (
+            parent_source_id is not None
+            and reply_to is None
+        ):
+
+            logger.warning(
+                "NO PARENT MAPPING | SOURCE_PARENT=%s | TARGET=%s",
+                parent_source_id,
+                target_chat_id
+            )
 
         target_message_id = await send_to_target(
             message,
@@ -258,55 +396,140 @@ async def publish_message(message, source_chat_id=SOURCE_CHAT_ID):
         )
 
         if target_message_id is None:
-            logger.error("COPY FAILED | SOURCE=%s | TARGET=%s", message.id, target_chat_id)
+
+            logger.error(
+                "COPY FAILED | SOURCE=%s | TARGET=%s",
+                message.id,
+                target_chat_id
+            )
+
             continue
 
-        save_mapping(message.id, target_chat_id, target_message_id, source_chat_id)
+        # ----------------------------------------------------
+        # Save mapping
+        # ----------------------------------------------------
+
+        save_mapping(
+            message.id,
+            target_chat_id,
+            target_message_id,
+            source_chat_id
+        )
+
         success += 1
-        logger.info("COPIED | SOURCE=%s -> TARGET=%s:%s", message.id, target_chat_id, target_message_id)
+
+        logger.info(
+            "COPIED | SOURCE=%s -> TARGET=%s:%s",
+            message.id,
+            target_chat_id,
+            target_message_id
+        )
 
         await asyncio.sleep(0.3)
 
-    logger.info("PUBLISH COMPLETE | SOURCE=%s | %s/%s", message.id, success, len(TARGET_CHAT_IDS))
+    logger.info(
+        "PUBLISH COMPLETE | SOURCE=%s | %s/%s",
+        message.id,
+        success,
+        len(TARGET_CHAT_IDS)
+    )
 
 
 # ============================================================
-# EVENT HANDLERS
+# SOURCE - NEW MESSAGE
 # ============================================================
 
-@client.on(events.NewMessage(chats=SOURCE_CHAT_ID))
+@client.on(
+    events.NewMessage(
+        chats=SOURCE_CHAT_ID
+    )
+)
 async def source_new_message(event):
+
     try:
+
         message = event.message
-        if BOT_ID is not None and event.sender_id == BOT_ID:
+
+        # تجاهل رسائل البوت نفسه
+        if (
+            BOT_ID is not None
+            and event.sender_id == BOT_ID
+        ):
             return
 
         text = message.raw_text or ""
-        if not text.strip() or text.startswith("/"):
+
+        if not text.strip():
             return
 
-        logger.info("NEW SOURCE MESSAGE | ID=%s | SENDER=%s | REPLY_TO=%s", message.id, event.sender_id, message.reply_to_msg_id)
-        await publish_message(message)
+        if text.startswith("/"):
+            return
+
+        logger.info(
+            "NEW SOURCE MESSAGE | ID=%s | SENDER=%s | REPLY_TO=%s",
+            message.id,
+            event.sender_id,
+            message.reply_to_msg_id
+        )
+
+        await publish_message(
+            message,
+            SOURCE_CHAT_ID
+        )
+
     except Exception as e:
-        logger.exception("NEW MESSAGE ERROR: %s", e)
+
+        logger.exception(
+            "NEW MESSAGE ERROR: %s",
+            e
+        )
 
 
-@client.on(events.MessageEdited(chats=SOURCE_CHAT_ID))
+# ============================================================
+# SOURCE - EDIT
+# ============================================================
+
+@client.on(
+    events.MessageEdited(
+        chats=SOURCE_CHAT_ID
+    )
+)
 async def source_edit_message(event):
+
     try:
+
         message = event.message
+
         text = message.raw_text or ""
-        if not text.strip() or text.startswith("/"):
+
+        if not text.strip():
             return
 
-        mappings = get_mappings(message.id)
+        if text.startswith("/"):
+            return
+
+        mappings = get_mappings(
+            message.id,
+            SOURCE_CHAT_ID
+        )
+
         if not mappings:
-            logger.warning("NO MAPPING FOR EDIT | SOURCE=%s", message.id)
+
+            logger.warning(
+                "NO MAPPING FOR EDIT | SOURCE=%s",
+                message.id
+            )
+
             return
 
-        logger.info("EDIT SOURCE MESSAGE | SOURCE=%s | TARGETS=%s", message.id, len(mappings))
+        logger.info(
+            "EDIT SOURCE MESSAGE | SOURCE=%s | TARGETS=%s",
+            message.id,
+            len(mappings)
+        )
 
         for target_chat_id, target_message_id in mappings:
+
             result = await run_with_retry(
                 client.edit_message,
                 target_chat_id,
@@ -314,60 +537,150 @@ async def source_edit_message(event):
                 text,
                 formatting_entities=message.entities
             )
+
             if result is not None:
-                logger.info("EDITED | SOURCE=%s -> TARGET=%s:%s", message.id, target_chat_id, target_message_id)
+
+                logger.info(
+                    "EDITED | SOURCE=%s -> TARGET=%s:%s",
+                    message.id,
+                    target_chat_id,
+                    target_message_id
+                )
+
             await asyncio.sleep(0.3)
+
     except Exception as e:
-        logger.exception("EDIT HANDLER ERROR: %s", e)
+
+        logger.exception(
+            "EDIT HANDLER ERROR: %s",
+            e
+        )
 
 
-async def delete_source_message(source_message_id, source_chat_id=SOURCE_CHAT_ID):
-    mappings = get_mappings(source_message_id, source_chat_id)
+# ============================================================
+# DELETE SOURCE MESSAGE
+# ============================================================
+
+async def delete_source_message(
+    source_message_id,
+    source_chat_id=SOURCE_CHAT_ID
+):
+
+    mappings = get_mappings(
+        source_message_id,
+        source_chat_id
+    )
+
     if not mappings:
-        logger.warning("NO MAPPING FOR DELETE | SOURCE=%s", source_message_id)
+
+        logger.warning(
+            "NO MAPPING FOR DELETE | SOURCE=%s",
+            source_message_id
+        )
+
         return
 
-    logger.info("DELETE SOURCE=%s | %s TARGETS", source_message_id, len(mappings))
+    logger.info(
+        "DELETE SOURCE=%s | %s TARGETS",
+        source_message_id,
+        len(mappings)
+    )
 
     for target_chat_id, target_message_id in mappings:
+
         result = await run_with_retry(
             client.delete_messages,
             target_chat_id,
             [target_message_id]
         )
+
         if result is not None:
-            logger.info("DELETED | SOURCE=%s -> TARGET=%s:%s", source_message_id, target_chat_id, target_message_id)
+
+            logger.info(
+                "DELETED | SOURCE=%s -> TARGET=%s:%s",
+                source_message_id,
+                target_chat_id,
+                target_message_id
+            )
+
         await asyncio.sleep(0.3)
 
-    delete_mappings(source_message_id, source_chat_id)
-
-
-@client.on(events.MessageDeleted(chats=SOURCE_CHAT_ID))
-async def source_deleted_message(event):
-    try:
-        logger.info("DELETE EVENT | SOURCE=%s | IDS=%s", SOURCE_CHAT_ID, event.deleted_ids)
-        for message_id in event.deleted_ids:
-            await delete_source_message(message_id)
-    except Exception as e:
-        logger.exception("DELETE HANDLER ERROR: %s", e)
+    delete_mappings(
+        source_message_id,
+        source_chat_id
+    )
 
 
 # ============================================================
-# SPECIAL ADDITIONAL CHANNELS
+# SOURCE - DELETED
+# ============================================================
+
+@client.on(
+    events.MessageDeleted(
+        chats=SOURCE_CHAT_ID
+    )
+)
+async def source_deleted_message(event):
+
+    try:
+
+        logger.info(
+            "DELETE EVENT | SOURCE=%s | IDS=%s",
+            SOURCE_CHAT_ID,
+            event.deleted_ids
+        )
+
+        for message_id in event.deleted_ids:
+
+            await delete_source_message(
+                message_id,
+                SOURCE_CHAT_ID
+            )
+
+    except Exception as e:
+
+        logger.exception(
+            "DELETE HANDLER ERROR: %s",
+            e
+        )
+
+
+# ============================================================
+# SPECIAL CHANNELS
 # ============================================================
 
 for _special_chat_id, _special_owner_id in SPECIAL_CHANNELS.items():
 
-    @client.on(events.NewMessage(chats=_special_chat_id))
-    async def special_channel_new_message(event, special_chat_id=_special_chat_id, special_owner_id=_special_owner_id):
+    # --------------------------------------------------------
+    # NEW SPECIAL CHANNEL MESSAGE
+    # --------------------------------------------------------
+
+    @client.on(
+        events.NewMessage(
+            chats=_special_chat_id
+        )
+    )
+    async def special_channel_new_message(
+        event,
+        special_chat_id=_special_chat_id,
+        special_owner_id=_special_owner_id
+    ):
+
         try:
+
             message = event.message
+
             text = message.raw_text or ""
-            if not text.strip() or text.startswith("/"):
+
+            if not text.strip():
+                return
+
+            if text.startswith("/"):
                 return
 
             logger.info(
-                "NEW SPECIAL CHANNEL MESSAGE | CHANNEL=%s | ID=%s | SENDER=%s | OWNER=%s | REPLY_TO=%s",
+                "NEW SPECIAL CHANNEL MESSAGE | "
+                "CHANNEL=%s | ID=%s | SENDER=%s | OWNER=%s | REPLY_TO=%s",
                 special_chat_id,
                 message.id,
                 event.sender_id,
@@ -375,24 +688,60 @@ for _special_chat_id, _special_owner_id in SPECIAL_CHANNELS.items():
                 message.reply_to_msg_id
             )
 
-            await publish_message(message, special_chat_id)
-        except Exception as e:
-            logger.exception("SPECIAL CHANNEL NEW MESSAGE ERROR: %s", e)
+            await publish_message(
+                message,
+                special_chat_id
+            )
 
-    @client.on(events.MessageEdited(chats=_special_chat_id))
-    async def special_channel_edit_message(event, special_chat_id=_special_chat_id):
+        except Exception as e:
+
+            logger.exception(
+                "SPECIAL CHANNEL NEW MESSAGE ERROR: %s",
+                e
+            )
+
+    # --------------------------------------------------------
+    # EDIT SPECIAL CHANNEL MESSAGE
+    # --------------------------------------------------------
+
+    @client.on(
+        events.MessageEdited(
+            chats=_special_chat_id
+        )
+    )
+    async def special_channel_edit_message(
+        event,
+        special_chat_id=_special_chat_id
+    ):
+
         try:
+
             message = event.message
+
             text = message.raw_text or ""
-            if not text.strip() or text.startswith("/"):
+
+            if not text.strip():
                 return
 
-            mappings = get_mappings(message.id, special_chat_id)
+            if text.startswith("/"):
+                return
+
+            mappings = get_mappings(
+                message.id,
+                special_chat_id
+            )
+
             if not mappings:
-                logger.warning("NO SPECIAL MAPPING FOR EDIT | SOURCE=%s", message.id)
+
+                logger.warning(
+                    "NO SPECIAL MAPPING FOR EDIT | SOURCE=%s",
+                    message.id
+                )
+
                 return
 
             for target_chat_id, target_message_id in mappings:
+
                 result = await run_with_retry(
                     client.edit_message,
                     target_chat_id,
@@ -400,95 +749,231 @@ for _special_chat_id, _special_owner_id in SPECIAL_CHANNELS.items():
                     text,
                     formatting_entities=message.entities
                 )
+
                 if result is not None:
+
                     logger.info(
                         "SPECIAL EDITED | SOURCE=%s -> TARGET=%s:%s",
-                        message.id, target_chat_id, target_message_id
+                        message.id,
+                        target_chat_id,
+                        target_message_id
                     )
-                await asyncio.sleep(0.3)
-        except Exception as e:
-            logger.exception("SPECIAL EDIT HANDLER ERROR: %s", e)
 
-    @client.on(events.MessageDeleted(chats=_special_chat_id))
-    async def special_channel_deleted_message(event, special_chat_id=_special_chat_id):
+                await asyncio.sleep(0.3)
+
+        except Exception as e:
+
+            logger.exception(
+                "SPECIAL EDIT HANDLER ERROR: %s",
+                e
+            )
+
+    # --------------------------------------------------------
+    # DELETE SPECIAL CHANNEL MESSAGE
+    # --------------------------------------------------------
+
+    @client.on(
+        events.MessageDeleted(
+            chats=_special_chat_id
+        )
+    )
+    async def special_channel_deleted_message(
+        event,
+        special_chat_id=_special_chat_id
+    ):
+
         try:
+
             logger.info(
                 "SPECIAL DELETE EVENT | SOURCE=%s | IDS=%s",
                 special_chat_id,
                 event.deleted_ids
             )
+
             for message_id in event.deleted_ids:
-                await delete_source_message(message_id, special_chat_id)
+
+                await delete_source_message(
+                    message_id,
+                    special_chat_id
+                )
+
         except Exception as e:
-            logger.exception("SPECIAL DELETE HANDLER ERROR: %s", e)
 
-@client.on(events.NewMessage(chats=SOURCE_CHAT_ID, pattern=r"^/del$"))
+            logger.exception(
+                "SPECIAL DELETE HANDLER ERROR: %s",
+                e
+            )
+
+
+# ============================================================
+# MANUAL DELETE /del
+# ============================================================
+
+@client.on(
+    events.NewMessage(
+        chats=SOURCE_CHAT_ID,
+        pattern=r"^/del$"
+    )
+)
 async def del_handler(event):
-    if not is_allowed(event.sender_id):
-        return
 
-    if not event.is_reply:
-        await event.reply("⚠️ خاصك تدير Reply على الرسالة اللي تحب تحذفها وتكتب /del")
-        return
+    try:
 
-    replied = await event.get_reply_message()
-    if replied is None:
-        return
+        # فقط الأشخاص المسموح لهم
+        if not is_allowed(event.sender_id):
+            return
 
-    source_message_id = replied.id
-    mappings = get_mappings(source_message_id)
-    if not mappings:
-        await event.reply(f"❌ ما لقيتش نسخة للرسالة (id={source_message_id})")
-        return
+        # لازم Reply
+        if not event.is_reply:
 
-    deleted_count = 0
-    for target_chat_id, target_message_id in mappings:
-        result = await run_with_retry(
-            client.delete_messages,
-            target_chat_id,
-            [target_message_id]
+            await event.reply(
+                "⚠️ خاصك تدير Reply على الرسالة "
+                "اللي تحب تحذفها وتكتب /del"
+            )
+
+            return
+
+        replied = await event.get_reply_message()
+
+        if replied is None:
+            return
+
+        source_message_id = replied.id
+
+        mappings = get_mappings(
+            source_message_id,
+            SOURCE_CHAT_ID
         )
-        if result is not None:
-            deleted_count += 1
-        await asyncio.sleep(0.3)
 
-    delete_mappings(source_message_id)
+        if not mappings:
 
-    try:
-        await client.delete_messages(SOURCE_CHAT_ID, [source_message_id])
+            await event.reply(
+                f"❌ ما لقيتش نسخة للرسالة "
+                f"(id={source_message_id})"
+            )
+
+            return
+
+        deleted_count = 0
+
+        # ----------------------------------------------------
+        # Delete target copies
+        # ----------------------------------------------------
+
+        for target_chat_id, target_message_id in mappings:
+
+            result = await run_with_retry(
+                client.delete_messages,
+                target_chat_id,
+                [target_message_id]
+            )
+
+            if result is not None:
+                deleted_count += 1
+
+            await asyncio.sleep(0.3)
+
+        # ----------------------------------------------------
+        # Remove DB mappings
+        # ----------------------------------------------------
+
+        delete_mappings(
+            source_message_id,
+            SOURCE_CHAT_ID
+        )
+
+        # ----------------------------------------------------
+        # Delete original source message
+        # ----------------------------------------------------
+
+        try:
+
+            await client.delete_messages(
+                SOURCE_CHAT_ID,
+                [source_message_id]
+            )
+
+        except Exception as e:
+
+            logger.warning(
+                "SOURCE DELETE FAILED: %s",
+                e
+            )
+
+        # ----------------------------------------------------
+        # Delete /del command
+        # ----------------------------------------------------
+
+        try:
+            await event.delete()
+        except Exception:
+            pass
+
+        logger.info(
+            "MANUAL DELETE | SOURCE=%s | %s/%s",
+            source_message_id,
+            deleted_count,
+            len(mappings)
+        )
+
     except Exception as e:
-        logger.warning("SOURCE DELETE FAILED: %s", e)
 
-    try:
-        await event.delete()
-    except Exception:
-        pass
-
-    logger.info("MANUAL DELETE | SOURCE=%s | %s/%s", source_message_id, deleted_count, len(mappings))
+        logger.exception(
+            "MANUAL DELETE ERROR: %s",
+            e
+        )
 
 
-@client.on(events.NewMessage(chats=SOURCE_CHAT_ID, pattern=r"^/status$"))
+# ============================================================
+# STATUS
+# ============================================================
+
+@client.on(
+    events.NewMessage(
+        chats=SOURCE_CHAT_ID,
+        pattern=r"^/status$"
+    )
+)
 async def status_handler(event):
+
     if not is_allowed(event.sender_id):
         return
 
     await event.reply(
         f"🤖 LEX AUTO PUBLISHER PRO ({BOT_NAME})\n\n"
         "🟢 STATUS: ONLINE\n\n"
+
         "🏠 SOURCE:\n"
         f"`{SOURCE_CHAT_ID}`\n\n"
+
         "📤 TARGETS:\n"
-        + "\n".join(f"`{chat_id}`" for chat_id in TARGET_CHAT_IDS)
+        + "\n".join(
+            f"`{chat_id}`"
+            for chat_id in TARGET_CHAT_IDS
+        )
         + "\n\n"
-        f"🗄 DB: `{DB_FILE}`"
+
+        f"🗄 DB:\n`{DB_FILE}`"
     )
 
 
-@client.on(events.NewMessage(pattern=r"^/id$"))
+# ============================================================
+# GET CHAT ID
+# ============================================================
+
+@client.on(
+    events.NewMessage(
+        pattern=r"^/id$"
+    )
+)
 async def id_handler(event):
+
     if not is_allowed(event.sender_id):
         return
-    await event.reply(f"🆔 CHAT ID:\n`{event.chat_id}`")
+
+    await event.reply(
+        f"🆔 CHAT ID:\n`{event.chat_id}`"
+    )
 
 
 # ============================================================
@@ -496,30 +981,87 @@ async def id_handler(event):
 # ============================================================
 
 async def main():
+
     global BOT_ID
+
+    # Initialize database
     init_db()
 
-    logger.info("========================================")
-    logger.info("LEX AUTO PUBLISHER PRO - %s", BOT_NAME)
-    logger.info("SOURCE: %s", SOURCE_CHAT_ID)
-    logger.info("SPECIAL CHANNELS: %s", SPECIAL_CHANNELS)
-    logger.info("TARGETS: %s", TARGET_CHAT_IDS)
-    logger.info("DATABASE: %s", DB_FILE)
+    logger.info(
+        "========================================"
+    )
 
-    await client.start(bot_token=BOT_TOKEN)
+    logger.info(
+        "LEX AUTO PUBLISHER PRO - %s",
+        BOT_NAME
+    )
+
+    logger.info(
+        "SOURCE: %s",
+        SOURCE_CHAT_ID
+    )
+
+    logger.info(
+        "SPECIAL CHANNELS: %s",
+        SPECIAL_CHANNELS
+    )
+
+    logger.info(
+        "TARGETS: %s",
+        TARGET_CHAT_IDS
+    )
+
+    logger.info(
+        "DATABASE: %s",
+        DB_FILE
+    )
+
+    logger.info(
+        "========================================"
+    )
+
+    # Start bot
+    await client.start(
+        bot_token=BOT_TOKEN
+    )
+
     me = await client.get_me()
+
     BOT_ID = me.id
 
-    logger.info("BOT ID: %s", BOT_ID)
-    logger.info("USERNAME: @%s", getattr(me, "username", ""))
-    logger.info("STATUS: ONLINE")
-    logger.info("========================================")
+    logger.info(
+        "BOT ID: %s",
+        BOT_ID
+    )
+
+    logger.info(
+        "USERNAME: @%s",
+        getattr(me, "username", "")
+    )
+
+    logger.info(
+        "STATUS: ONLINE"
+    )
+
+    logger.info(
+        "========================================"
+    )
 
     await client.run_until_disconnected()
 
 
+# ============================================================
+# RUN
+# ============================================================
+
 if __name__ == "__main__":
+
     try:
+
         asyncio.run(main())
+
     except KeyboardInterrupt:
-        logger.info("LEX STOPPED") 
+
+        logger.info(
+            "LEX STOPPED"
+            ) 
