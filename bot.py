@@ -14,9 +14,17 @@ load_dotenv()
 # CONFIG
 # ============================================================
 
-API_ID = int(os.environ["API_ID"])
-API_HASH = os.environ["API_HASH"]
-BOT_TOKEN = os.environ["BOT_TOKEN"]
+try:
+    API_ID = int(os.environ.get("API_ID", "0"))
+    API_HASH = os.environ.get("API_HASH", "")
+    BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+    
+    if not API_ID or not API_HASH or not BOT_TOKEN:
+        raise ValueError("API_ID, API_HASH, and BOT_TOKEN are required!")
+        
+except Exception as e:
+    print(f"ERROR: Configuration missing - {e}")
+    exit(1)
 
 DB_FILE = os.getenv("DB_FILE", "lex_publisher.db")
 
@@ -103,12 +111,10 @@ def save_copy(source_chat, source_msg, target_chat, target_msg):
             target_msg
         )
     )
-
     db.commit()
 
 
 def get_source_from_target(target_chat, target_msg):
-
     row = db.execute(
         """
         SELECT source_chat, source_msg
@@ -122,12 +128,10 @@ def get_source_from_target(target_chat, target_msg):
             target_msg
         )
     ).fetchone()
-
     return row
 
 
 def get_copies(source_chat, source_msg):
-
     return db.execute(
         """
         SELECT target_chat, target_msg
@@ -143,7 +147,6 @@ def get_copies(source_chat, source_msg):
 
 
 def delete_records(source_chat, source_msg):
-
     db.execute(
         """
         DELETE FROM published
@@ -155,7 +158,6 @@ def delete_records(source_chat, source_msg):
             source_msg
         )
     )
-
     db.commit()
 
 
@@ -175,7 +177,6 @@ client = TelegramClient(
 # ============================================================
 
 async def is_allowed(event):
-
     if not OWNER_IDS:
         return False
 
@@ -192,30 +193,17 @@ async def is_allowed(event):
 # ============================================================
 
 async def copy_message_without_forward(message, target):
-    """
-    تنسخ الرسالة بدون علامة Forwarded from
-    """
+    """تنسخ الرسالة بدون علامة Forwarded from"""
     try:
-        # الحصول على نص الرسالة
         text = message.text or message.caption or ""
         
-        # التحقق من الرابط (إذا كان الرسالة موجودة فقط)
-        if message.web_preview:
-            # إذا كانت الرسالة تحتوي على رابط بمعاينة
-            result = await client.send_message(
-                entity=target,
-                message=text,
-                link_preview=True
-            )
-        elif message.media:
-            # إذا كانت الرسالة تحتوي على وسائط (صور، فيديو، إلخ)
+        if message.media:
             result = await client.send_file(
                 entity=target,
                 file=message.media,
                 caption=text
             )
         else:
-            # رسالة نصية فقط
             result = await client.send_message(
                 entity=target,
                 message=text
@@ -239,9 +227,7 @@ async def publish_message(event):
 
     # تجاهل أوامر /del
     if message.raw_text:
-
         text = message.raw_text.strip().lower()
-
         if text.startswith("/del"):
             return
 
@@ -256,10 +242,7 @@ async def publish_message(event):
     )
 
     for target in TARGETS:
-
         try:
-
-            # نسخ الرسالة بدون Forward
             copied_message = await copy_message_without_forward(message, target)
 
             if not copied_message:
@@ -281,16 +264,13 @@ async def publish_message(event):
             )
 
         except FloodWaitError as e:
-
             log.warning(
                 "FloodWait: %s seconds",
                 e.seconds
             )
-
             await asyncio.sleep(e.seconds)
 
         except RPCError as e:
-
             log.error(
                 "Telegram error TARGET=%s : %s",
                 target,
@@ -298,7 +278,6 @@ async def publish_message(event):
             )
 
         except Exception as e:
-
             log.exception(
                 "Publish error TARGET=%s : %s",
                 target,
@@ -324,7 +303,6 @@ async def delete_command(event):
     # ========================================================
 
     if not await is_allowed(event):
-
         log.warning("DELETE DENIED - NOT OWNER")
         
         try:
@@ -340,7 +318,6 @@ async def delete_command(event):
     # ========================================================
 
     if not event.is_reply:
-
         log.warning("DELETE - NO REPLY")
         
         await event.reply(
@@ -352,7 +329,6 @@ async def delete_command(event):
     replied = await event.get_reply_message()
 
     if not replied:
-
         log.warning("DELETE - REPLY NOT FOUND")
         
         await event.reply(
@@ -377,7 +353,6 @@ async def delete_command(event):
     # ========================================================
 
     if current_chat == SOURCE:
-
         log.info("DELETE - REPLYING TO SOURCE")
         
         source_chat = SOURCE
@@ -388,7 +363,6 @@ async def delete_command(event):
     # ========================================================
 
     else:
-
         log.info("DELETE - REPLYING TO TARGET, SEARCHING IN DB")
         
         found = get_source_from_target(
@@ -397,7 +371,6 @@ async def delete_command(event):
         )
 
         if found:
-
             source_chat, source_message = found
             log.info("DELETE - FOUND IN DB: SOURCE_CHAT=%s, SOURCE_MSG=%s", source_chat, source_message)
         else:
@@ -408,7 +381,6 @@ async def delete_command(event):
     # ========================================================
 
     if source_chat is None:
-
         log.error("DELETE - SOURCE CHAT IS NONE")
         
         await event.reply(
@@ -431,7 +403,6 @@ async def delete_command(event):
     # ========================================================
 
     try:
-
         await client.delete_messages(
             source_chat,
             source_message
@@ -441,7 +412,6 @@ async def delete_command(event):
         deleted_count += 1
 
     except Exception as e:
-
         log.error("❌ SOURCE DELETE ERROR: %s", e)
         error_count += 1
 
@@ -461,9 +431,7 @@ async def delete_command(event):
     # ========================================================
 
     for target_chat, target_message in copies:
-
         try:
-
             await client.delete_messages(
                 target_chat,
                 target_message
@@ -478,7 +446,6 @@ async def delete_command(event):
             deleted_count += 1
 
         except Exception as e:
-
             log.error(
                 "❌ COPY DELETE ERROR | %s | %s | %s",
                 target_chat,
@@ -543,63 +510,40 @@ async def delete_command(event):
 async def main():
 
     log.info("===================================")
-    log.info("LEX MERCHANT ADS")
+    log.info("LEX MERCHANT ADS BOT")
     log.info("===================================")
 
+    log.info("API_ID  : %s", API_ID)
     log.info("SOURCE  : %s", SOURCE)
     log.info("TARGETS : %s", TARGETS)
     log.info("OWNERS  : %s", OWNER_IDS)
 
-    max_retries = 3
-    retry_count = 0
+    try:
+        log.info("Starting bot...")
+        await client.start(bot_token=BOT_TOKEN)
 
-    while retry_count < max_retries:
-        try:
-            log.info("Attempting to start bot (attempt %d/%d)...", retry_count + 1, max_retries)
-            
-            await client.start(
-                bot_token=BOT_TOKEN
-            )
+        me = await client.get_me()
 
-            me = await client.get_me()
+        log.info(
+            "✅ BOT STARTED: @%s | ID=%s",
+            me.username,
+            me.id
+        )
 
-            log.info(
-                "✅ BOT STARTED: @%s | ID=%s",
-                me.username,
-                me.id
-            )
+        log.info("✅ BOT IS RUNNING")
 
-            log.info("✅ BOT IS RUNNING")
+        await client.run_until_disconnected()
 
-            await client.run_until_disconnected()
-            break
+    except FloodWaitError as e:
+        log.error("❌ FloodWait Error: %s seconds required", e.seconds)
+        await asyncio.sleep(e.seconds)
+        await main()
 
-        except FloodWaitError as e:
-            retry_count += 1
-            wait_time = e.seconds if hasattr(e, 'seconds') else 30
-            
-            log.error("❌ FloodWait Error - Waiting %d seconds before retry...", wait_time)
-            
-            if retry_count < max_retries:
-                await asyncio.sleep(wait_time)
-            else:
-                log.error("❌ Max retries reached. Bot failed to start.")
-                raise
-
-        except Exception as e:
-            retry_count += 1
-            
-            log.error("❌ Error starting bot: %s", e)
-            
-            if retry_count < max_retries:
-                log.info("Retrying in 10 seconds...")
-                await asyncio.sleep(10)
-            else:
-                log.error("❌ Max retries reached. Bot failed to start.")
-                raise
+    except Exception as e:
+        log.error("❌ FATAL ERROR: %s", e)
+        raise
 
 
 if __name__ == "__main__":
-
     asyncio.run(main())
  
