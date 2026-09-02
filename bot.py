@@ -550,21 +550,53 @@ async def main():
     log.info("TARGETS : %s", TARGETS)
     log.info("OWNERS  : %s", OWNER_IDS)
 
-    await client.start(
-        bot_token=BOT_TOKEN
-    )
+    max_retries = 3
+    retry_count = 0
 
-    me = await client.get_me()
+    while retry_count < max_retries:
+        try:
+            log.info("Attempting to start bot (attempt %d/%d)...", retry_count + 1, max_retries)
+            
+            await client.start(
+                bot_token=BOT_TOKEN
+            )
 
-    log.info(
-        "BOT STARTED: @%s | ID=%s",
-        me.username,
-        me.id
-    )
+            me = await client.get_me()
 
-    log.info("BOT IS RUNNING")
+            log.info(
+                "✅ BOT STARTED: @%s | ID=%s",
+                me.username,
+                me.id
+            )
 
-    await client.run_until_disconnected()
+            log.info("✅ BOT IS RUNNING")
+
+            await client.run_until_disconnected()
+            break
+
+        except FloodWaitError as e:
+            retry_count += 1
+            wait_time = e.seconds if hasattr(e, 'seconds') else 30
+            
+            log.error("❌ FloodWait Error - Waiting %d seconds before retry...", wait_time)
+            
+            if retry_count < max_retries:
+                await asyncio.sleep(wait_time)
+            else:
+                log.error("❌ Max retries reached. Bot failed to start.")
+                raise
+
+        except Exception as e:
+            retry_count += 1
+            
+            log.error("❌ Error starting bot: %s", e)
+            
+            if retry_count < max_retries:
+                log.info("Retrying in 10 seconds...")
+                await asyncio.sleep(10)
+            else:
+                log.error("❌ Max retries reached. Bot failed to start.")
+                raise
 
 
 if __name__ == "__main__":
