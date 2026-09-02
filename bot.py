@@ -231,7 +231,7 @@ async def publish_message(event):
 
         try:
 
-            result = await client.forward_messages(
+            result = await client.copy_messages(
                 entity=target,
                 messages=message,
                 from_peer=SOURCE
@@ -458,6 +458,27 @@ async def delete_command(event):
     except Exception:
         pass
 
+    # ========================================================
+    # حذف أمر /del من SOURCE إذا كان من مجموعة أخرى
+    # ========================================================
+
+    if event.chat_id != SOURCE:
+
+        try:
+            await client.delete_messages(
+                SOURCE,
+                message.id
+            )
+
+            log.info("SOURCE DELETE COMMAND SUCCESS")
+
+        except Exception as e:
+
+            log.error(
+                "SOURCE DELETE COMMAND ERROR: %s",
+                e
+            )
+
     log.info("DELETE COMPLETE")
 
 
@@ -495,3 +516,4 @@ async def main():
 if __name__ == "__main__":
 
     asyncio.run(main())
+ 
