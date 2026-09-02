@@ -14,20 +14,17 @@ API_ID = int(os.environ.get("API_ID", "0"))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
-# الأشخاص المسموح لهم بالنشر
 AUTHORIZED_USER_IDS = {
     822007358,
     2065539959,
 }
 
-# مجموعة الإدارة / المصدر
 ADMIN_GROUP_ID = -1003963584914
 
-# المجموعات التي يتم النشر فيها
 TARGET_GROUP_IDS = [
     -1003952714985,
     -1002470205630,
-    -1004407777777777,  # ضع هنا ID المجموعة الثالثة الصحيح
+    -1004407777777,  # <-- بدّل هذا بالـ ID الصحيح للمجموعة الثالثة
 ]
 
 # ============================================================
@@ -36,16 +33,17 @@ TARGET_GROUP_IDS = [
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
+    format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
 logger = logging.getLogger("LEX-BOT")
 
+
 # ============================================================
-# VALIDATION
+# CHECK VARIABLES
 # ============================================================
 
-if not API_ID:
+if API_ID == 0:
     raise RuntimeError("API_ID غير موجود في Railway Variables")
 
 if not API_HASH:
@@ -54,44 +52,48 @@ if not API_HASH:
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN غير موجود في Railway Variables")
 
+
 # ============================================================
-# TELETHON
+# TELEGRAM CLIENT
 # ============================================================
 
 client = TelegramClient(
     "lex_bot",
     API_ID,
-    API_HASH,
+    API_HASH
 )
 
 
 # ============================================================
-# NEW MESSAGE HANDLER
+# MESSAGE HANDLER
 # ============================================================
 
 @client.on(events.NewMessage)
 async def handle_message(event):
 
     try:
+
         sender = await event.get_sender()
 
         if not sender:
             return
 
-        # فقط الأشخاص المصرح لهم
+        # فقط الأشخاص المسموح لهم
         if sender.id not in AUTHORIZED_USER_IDS:
             return
 
         text = (event.raw_text or "").strip()
 
         # ====================================================
-        # /del
+        # DELETE COMMAND
         # ====================================================
 
         if text.startswith("/del"):
 
             try:
+
                 if event.is_reply:
+
                     reply = await event.get_reply_message()
 
                     if reply:
@@ -100,12 +102,13 @@ async def handle_message(event):
                 await event.delete()
 
                 logger.info(
-                    "DEL executed by %s",
+                    "DEL executed by user %s",
                     sender.id
                 )
 
             except Exception as e:
-                logger.exception(
+
+                logger.error(
                     "DEL ERROR: %s",
                     e
                 )
@@ -113,7 +116,7 @@ async def handle_message(event):
             return
 
         # ====================================================
-        # ONLY ADMIN GROUP CAN PUBLISH
+        # GET CHAT
         # ====================================================
 
         chat = await event.get_chat()
@@ -121,16 +124,20 @@ async def handle_message(event):
         if not chat:
             return
 
+        # ====================================================
+        # ONLY ADMIN GROUP
+        # ====================================================
+
         if chat.id != ADMIN_GROUP_ID:
             return
 
         logger.info(
-            "NEW PUBLICATION from %s in ADMIN GROUP",
+            "Publication received from %s",
             sender.id
         )
 
         # ====================================================
-        # SEND TO TARGET GROUPS
+        # PUBLISH
         # ====================================================
 
         for group_id in TARGET_GROUP_IDS:
@@ -143,17 +150,24 @@ async def handle_message(event):
                 )
 
                 logger.info(
-                    "Published successfully -> %s",
+                    "Published -> %s",
                     group_id
                 )
 
             except Exception as e:
 
-                logger.exception(
-                    "Failed publishing -> %s | %s",
+                logger.error(
+                    "Publish failed -> %s | %s",
                     group_id,
                     e
                 )
+
+    except Exception as e:
+
+        logger.exception(
+            "MESSAGE HANDLER ERROR: %s",
+            e
+        )
 
 
 # ============================================================
@@ -165,21 +179,23 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
+
     return "LEX Telegram Publisher is running."
 
 
 @app.route("/health")
 def health():
+
     return "OK"
 
 
 # ============================================================
-# TELEGRAM THREAD
+# BOT
 # ============================================================
 
 def run_bot():
 
-    async def start():
+    async def start_bot():
 
         await client.start(
             bot_token=BOT_TOKEN
@@ -187,40 +203,23 @@ def run_bot():
 
         me = await client.get_me()
 
-        logger.info(
-            "========================================"
-        )
-        logger.info(
-            "LEX BOT STARTED"
-        )
-        logger.info(
-            "Bot ID: %s",
-            me.id
-        )
-        logger.info(
-            "Bot username: @%s",
-            me.username
-        )
-        logger.info(
-            "ADMIN GROUP: %s",
-            ADMIN_GROUP_ID
-        )
-        logger.info(
-            "TARGET GROUPS: %s",
-            TARGET_GROUP_IDS
-        )
-        logger.info(
-            "AUTHORIZED USERS: %s",
-            list(AUTHORIZED_USER_IDS)
-        )
-        logger.info(
-            "========================================"
-        )
+        logger.info("==============================")
+        logger.info("LEX BOT STARTED")
+        logger.info("BOT ID: %s", me.id)
+        logger.info("BOT USERNAME: @%s", me.username)
+        logger.info("ADMIN GROUP: %s", ADMIN_GROUP_ID)
+        logger.info("TARGETS: %s", TARGET_GROUP_IDS)
+        logger.info("AUTHORIZED: %s", list(AUTHORIZED_USER_IDS))
+        logger.info("==============================")
 
         await client.run_until_disconnected()
 
-    asyncio.run(start())
+    asyncio.run(start_bot())
 
+
+# ============================================================
+# WEB SERVER
+# ============================================================
 
 def run_server():
 
