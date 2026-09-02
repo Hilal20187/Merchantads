@@ -231,28 +231,21 @@ async def publish_message(event):
 
         try:
 
-            result = await client.copy_messages(
+            # إرسال الرسالة بنفس المحتوى (بدون Forward)
+            result = await client.send_message(
                 entity=target,
-                messages=message,
-                from_peer=SOURCE
+                message=message,
+                disable_web_page_preview=True
             )
 
-            if isinstance(result, list):
-
-                if not result:
-                    continue
-
-                copied_message = result[0]
-
-            else:
-
-                copied_message = result
+            if not result:
+                continue
 
             save_copy(
                 SOURCE,
                 message.id,
                 target,
-                copied_message.id
+                result.id
             )
 
             log.info(
@@ -260,7 +253,7 @@ async def publish_message(event):
                 SOURCE,
                 target,
                 message.id,
-                copied_message.id
+                result.id
             )
 
         except FloodWaitError as e:
