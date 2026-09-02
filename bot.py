@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import sqlite3
+
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError, RPCError
 from dotenv import load_dotenv
@@ -9,287 +10,683 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ============================================================
-# CONFIG - اقرأ المتغيرات بشكل واضح
+# LEX AUTO PUBLISHER PRO
+# SOURCE -> 5 TARGET GROUPS
 # ============================================================
 
-API_ID = os.environ.get("API_ID")
-API_HASH = os.environ.get("API_HASH")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+BOT_TOKEN = os.environ["BOT_TOKEN"]
 
-# تحقق من المتغيرات الإجبارية
-if not all([API_ID, API_HASH, BOT_TOKEN]):
-    print("❌ ERROR: Missing required environment variables!")
-    print(f"API_ID: {'✅' if API_ID else '❌'}")
-    print(f"API_HASH: {'✅' if API_HASH else '❌'}")
-    print(f"BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}")
-    exit(1)
-
-# حول API_ID إلى int
-try:
-    API_ID = int(API_ID)
-except ValueError:
-    print("❌ ERROR: API_ID must be a number!")
-    exit(1)
-
-DB_FILE = os.getenv("DB_FILE", "lex_publisher.db")
-
-SOURCE = int(os.getenv("SOURCE", "-1004333211848"))
-
-TARGETS_STRING = os.getenv(
-    "TARGETS",
-    "-1004407774851,-1002470205630,-1001869395971,-1003952714985,-1003026306104"
-)
-
-TARGETS = [int(x.strip()) for x in TARGETS_STRING.split(",") if x.strip()]
-
-OWNER_IDS_STRING = os.getenv("OWNER_IDS", "")
-OWNER_IDS = {int(x.strip()) for x in OWNER_IDS_STRING.split(",") if x.strip()}
+# صاحب البوت
+OWNER_ID = int(os.environ["OWNER_ID"])
 
 # ============================================================
-# LOGGING
+# SOURCE GROUP
 # ============================================================
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-log = logging.getLogger("LEX")
+SOURCE_CHAT_ID = int(os.environ["SOURCE_CHAT_ID"])
+
+# ============================================================
+# TARGET GROUPS
+# ============================================================
+
+TARGET_CHAT_IDS = [
+    int(x.strip())
+    for x in os.environ["TARGET_CHAT_IDS"].split(",")
+]
 
 # ============================================================
 # DATABASE
 # ============================================================
 
-db = sqlite3.connect(DB_FILE, check_same_thread=False)
+DB_FILE = os.getenv("DB_FILE", "lex_publisher.db")
 
-db.execute("""
-CREATE TABLE IF NOT EXISTS published (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_chat INTEGER NOT NULL,
-    source_msg INTEGER NOT NULL,
-    target_chat INTEGER NOT NULL,
-    target_msg INTEGER NOT NULL
+# ============================================================
+# LOGGING
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
 )
-""")
 
-db.execute("""CREATE INDEX IF NOT EXISTS idx_source ON published(source_chat, source_msg)""")
-db.execute("""CREATE INDEX IF NOT EXISTS idx_target ON published(target_chat, target_msg)""")
-db.commit()
+logger = logging.getLogger("LEX")
 
-def save_copy(source_chat, source_msg, target_chat, target_msg):
-    db.execute(
-        "INSERT INTO published (source_chat, source_msg, target_chat, target_msg) VALUES (?, ?, ?, ?)",
-        (source_chat, source_msg, target_chat, target_msg)
-    )
-    db.commit()
-
-def get_source_from_target(target_chat, target_msg):
-    return db.execute(
-        "SELECT source_chat, source_msg FROM published WHERE target_chat = ? AND target_msg = ? LIMIT 1",
-        (target_chat, target_msg)
-    ).fetchone()
-
-def get_copies(source_chat, source_msg):
-    return db.execute(
-        "SELECT target_chat, target_msg FROM published WHERE source_chat = ? AND source_msg = ?",
-        (source_chat, source_msg)
-    ).fetchall()
-
-def delete_records(source_chat, source_msg):
-    db.execute(
-        "DELETE FROM published WHERE source_chat = ? AND source_msg = ?",
-        (source_chat, source_msg)
-    )
-    db.commit()
 
 # ============================================================
-# TELEGRAM CLIENT
+# DATABASE INIT
 # ============================================================
 
-client = TelegramClient("merchantads_bot", API_ID, API_HASH)
+def init_db():
 
-# ============================================================
-# CHECK OWNER
-# ============================================================
+    conn = sqlite3.connect(DB_FILE, timeout=30)
 
-async def is_allowed(event):
-    if not OWNER_IDS:
-        return False
-    sender = await event.get_sender()
-    return sender and sender.id in OWNER_IDS
-
-# ============================================================
-# COPY MESSAGE
-# ============================================================
-
-async def copy_message_without_forward(message, target):
     try:
-        text = message.text or message.caption or ""
-        
-        if message.media:
-            result = await client.send_file(entity=target, file=message.media, caption=text)
-        else:
-            result = await client.send_message(entity=target, message=text)
-        
-        return result
-    except Exception as e:
-        log.error("Error copying message: %s", e)
-        return None
+
+        conn.execute(""" CREATE TABLE IF NOT EXISTS message_map ( source_chat_id INTEGER NOT NULL, source_message_id INTEGER NOT NULL, target_chat_id INTEGER NOT NULL, target_message_id INTEGER NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY ( source_chat_id, source_message_id, target_chat_id ) ) """)
+
+        conn.commit()
+
+    finally:
+        conn.close()
+
 
 # ============================================================
-# PUBLISH EVENT
+# SAVE MAPPING
 # ============================================================
 
-@client.on(events.NewMessage(chats=SOURCE))
-async def publish_message(event):
-    message = event.message
+def save_mapping( source_message_id, target_chat_id, target_message_id ):
 
-    # تجاهل أوامر /del
-    if message.raw_text and message.raw_text.strip().lower().startswith("/del"):
-        return
+    conn = sqlite3.connect(DB_FILE, timeout=30)
 
-    # تجاهل service messages
-    if message.action:
-        return
+    try:
 
-    log.info("NEW MESSAGE | SOURCE=%s | MESSAGE=%s", SOURCE, message.id)
+        conn.execute(""" INSERT OR REPLACE INTO message_map ( source_chat_id, source_message_id, target_chat_id, target_message_id ) VALUES (?, ?, ?, ?) """, (
+            SOURCE_CHAT_ID,
+            source_message_id,
+            target_chat_id,
+            target_message_id
+        ))
 
-    for target in TARGETS:
+        conn.commit()
+
+    finally:
+        conn.close()
+
+
+# ============================================================
+# GET ALL TARGET MAPPINGS
+# ============================================================
+
+def get_mappings(source_message_id):
+
+    conn = sqlite3.connect(DB_FILE, timeout=30)
+
+    try:
+
+        rows = conn.execute(""" SELECT target_chat_id, target_message_id FROM message_map WHERE source_chat_id = ? AND source_message_id = ? """, (
+            SOURCE_CHAT_ID,
+            source_message_id
+        )).fetchall()
+
+        return rows
+
+    finally:
+        conn.close()
+
+
+# ============================================================
+# DELETE MAPPINGS
+# ============================================================
+
+def delete_mappings(source_message_id):
+
+    conn = sqlite3.connect(DB_FILE, timeout=30)
+
+    try:
+
+        conn.execute(""" DELETE FROM message_map WHERE source_chat_id = ? AND source_message_id = ? """, (
+            SOURCE_CHAT_ID,
+            source_message_id
+        ))
+
+        conn.commit()
+
+    finally:
+        conn.close()
+
+
+# ============================================================
+# TELETHON
+# ============================================================
+
+client = TelegramClient(
+    "lex_publisher",
+    API_ID,
+    API_HASH
+)
+
+
+BOT_ID = None
+
+
+# ============================================================
+# RETRY HELPER
+# ============================================================
+
+async def run_with_retry(func, *args, **kwargs):
+
+    for attempt in range(3):
+
         try:
-            copied_message = await copy_message_without_forward(message, target)
 
-            if not copied_message:
-                continue
-
-            save_copy(SOURCE, message.id, target, copied_message.id)
-            log.info("PUBLISHED | %s -> %s | %s -> %s", SOURCE, target, message.id, copied_message.id)
+            return await func(*args, **kwargs)
 
         except FloodWaitError as e:
-            log.warning("FloodWait: %s seconds", e.seconds)
-            await asyncio.sleep(e.seconds)
+
+            logger.warning(
+                "FloodWait: %s seconds",
+                e.seconds
+            )
+
+            await asyncio.sleep(e.seconds + 1)
+
         except RPCError as e:
-            log.error("Telegram error TARGET=%s : %s", target, e)
+
+            logger.error(
+                "Telegram RPC error: %s",
+                e
+            )
+
+            if attempt == 2:
+                return None
+
+            await asyncio.sleep(2)
+
         except Exception as e:
-            log.exception("Publish error TARGET=%s : %s", target, e)
+
+            logger.exception(
+                "Operation error: %s",
+                e
+            )
+
+            if attempt == 2:
+                return None
+
+            await asyncio.sleep(2)
+
+    return None
+
 
 # ============================================================
-# DELETE COMMAND
+# COPY MESSAGE TO ONE TARGET
 # ============================================================
 
-@client.on(events.NewMessage(pattern=r"^/del"))
+async def copy_to_target(message, target_chat_id):
+
+    text = message.raw_text or ""
+
+    if not text.strip():
+        return None
+
+    sent = await run_with_retry(
+        client.send_message,
+        target_chat_id,
+        text,
+        formatting_entities=message.entities
+    )
+
+    if sent is None:
+        return None
+
+    return sent.id
+
+
+# ============================================================
+# COPY TO ALL 5 GROUPS
+# ============================================================
+
+async def publish_message(message):
+
+    logger.info(
+        "PUBLISH SOURCE MESSAGE: %s",
+        message.id
+    )
+
+    success = 0
+
+    for target_chat_id in TARGET_CHAT_IDS:
+
+        target_message_id = await copy_to_target(
+            message,
+            target_chat_id
+        )
+
+        if target_message_id is None:
+
+            logger.error(
+                "COPY FAILED | SOURCE=%s | TARGET=%s",
+                message.id,
+                target_chat_id
+            )
+
+            continue
+
+        save_mapping(
+            message.id,
+            target_chat_id,
+            target_message_id
+        )
+
+        success += 1
+
+        logger.info(
+            "COPIED | SOURCE=%s -> TARGET=%s:%s",
+            message.id,
+            target_chat_id,
+            target_message_id
+        )
+
+        await asyncio.sleep(0.2)
+
+    logger.info(
+        "PUBLISH COMPLETE | SOURCE=%s | %s/%s",
+        message.id,
+        success,
+        len(TARGET_CHAT_IDS)
+    )
+
+
+# ============================================================
+# NEW MESSAGE
+# ============================================================
+
+@client.on(events.NewMessage(chats=SOURCE_CHAT_ID))
+async def source_new_message(event):
+
+    try:
+
+        message = event.message
+
+        # منع البوت من نسخ رسائله الخاصة
+        if BOT_ID is not None:
+            if event.sender_id == BOT_ID:
+                return
+
+        text = message.raw_text or ""
+
+        # تجاهل الرسائل الفارغة
+        if not text.strip():
+            return
+
+        # تجاهل الأوامر
+        if text.startswith("/"):
+            return
+
+        logger.info(
+            "NEW SOURCE MESSAGE | id=%s | sender=%s",
+            message.id,
+            event.sender_id
+        )
+
+        await publish_message(message)
+
+    except Exception as e:
+
+        logger.exception(
+            "NEW MESSAGE HANDLER ERROR: %s",
+            e
+        )
+
+
+# ============================================================
+# EDIT MESSAGE
+# ============================================================
+
+@client.on(events.MessageEdited(chats=SOURCE_CHAT_ID))
+async def source_edit_message(event):
+
+    try:
+
+        message = event.message
+
+        text = message.raw_text or ""
+
+        if not text.strip():
+            return
+
+        if text.startswith("/"):
+            return
+
+        mappings = get_mappings(message.id)
+
+        if not mappings:
+
+            logger.warning(
+                "NO MAPPING FOR EDIT | SOURCE=%s",
+                message.id
+            )
+
+            return
+
+        logger.info(
+            "EDIT SOURCE MESSAGE | id=%s | targets=%s",
+            message.id,
+            len(mappings)
+        )
+
+        for target_chat_id, target_message_id in mappings:
+
+            result = await run_with_retry(
+                client.edit_message,
+                target_chat_id,
+                target_message_id,
+                text,
+                formatting_entities=message.entities
+            )
+
+            if result is not None:
+
+                logger.info(
+                    "EDITED | SOURCE=%s -> TARGET=%s:%s",
+                    message.id,
+                    target_chat_id,
+                    target_message_id
+                )
+
+            await asyncio.sleep(0.2)
+
+    except Exception as e:
+
+        logger.exception(
+            "EDIT HANDLER ERROR: %s",
+            e
+        )
+
+
+# ============================================================
+# DELETE MESSAGE
+# ============================================================
+
+async def delete_source_message(source_message_id):
+
+    mappings = get_mappings(
+        source_message_id
+    )
+
+    if not mappings:
+
+        logger.warning(
+            "NO MAPPING FOR DELETE | SOURCE=%s",
+            source_message_id
+        )
+
+        return
+
+    logger.info(
+        "DELETE SOURCE=%s | %s TARGETS",
+        source_message_id,
+        len(mappings)
+    )
+
+    for target_chat_id, target_message_id in mappings:
+
+        result = await run_with_retry(
+            client.delete_messages,
+            target_chat_id,
+            [target_message_id]
+        )
+
+        if result is not None:
+
+            logger.info(
+                "DELETED | SOURCE=%s -> TARGET=%s:%s",
+                source_message_id,
+                target_chat_id,
+                target_message_id
+            )
+
+        await asyncio.sleep(0.2)
+
+    delete_mappings(
+        source_message_id
+    )
+
+
+# ============================================================
+# TELETHON DELETE EVENT
+# ============================================================
+
+@client.on(events.MessageDeleted(chats=SOURCE_CHAT_ID))
+async def source_deleted_message(event):
+
+    try:
+
+        logger.info(
+            "DELETE EVENT | SOURCE=%s | IDS=%s",
+            SOURCE_CHAT_ID,
+            event.deleted_ids
+        )
+
+        for message_id in event.deleted_ids:
+
+            await delete_source_message(
+                message_id
+            )
+
+    except Exception as e:
+
+        logger.exception(
+            "DELETE HANDLER ERROR: %s",
+            e
+        )
+
+
+# ============================================================
+# /status
+# ============================================================
+
+@client.on( events.NewMessage( chats=SOURCE_CHAT_ID, pattern=r"^/status$" ) )
+async def status_handler(event):
+
+    if event.sender_id != OWNER_ID:
+        return
+
+    await event.reply(
+        "🤖 LEX AUTO PUBLISHER PRO\n\n"
+        "🟢 STATUS: ONLINE\n\n"
+        f"👤 OWNER:\n`{OWNER_ID}`\n\n"
+        f"🏠 SOURCE:\n`{SOURCE_CHAT_ID}`\n\n"
+        "📤 TARGETS:\n"
+        + "\n".join(
+            f"`{chat_id}`"
+            for chat_id in TARGET_CHAT_IDS
+        )
+        + "\n\n"
+        "📝 TEXT ONLY\n"
+        "📤 AUTO PUBLISH: ON\n"
+        "✏ EDIT SYNC: ON\n"
+        "🗑 DELETE SYNC: ON"
+    )
+
+
+# ============================================================
+# /id
+# ============================================================
+
+@client.on( events.NewMessage( pattern=r"^/id$" ) )
+async def id_handler(event):
+
+    if event.sender_id != OWNER_ID:
+        return
+
+    await event.reply(
+        f"🆔 CHAT ID:\n`{event.chat_id}`"
+    )
+
+
+# ============================================================
+# /del - DELETE MESSAGE
+# ============================================================
+
+@client.on( events.NewMessage( chats=SOURCE_CHAT_ID, pattern=r"^/del$" ) )
 async def delete_command(event):
-    log.info("DELETE COMMAND TRIGGERED")
 
-    if not await is_allowed(event):
-        log.warning("DELETE DENIED - NOT OWNER")
-        try:
-            await event.reply("❌ أنت لست من المالكين!")
-            await event.delete()
-        except:
-            pass
+    if event.sender_id != OWNER_ID:
         return
 
+    # لازم يكون reply على رسالة
     if not event.is_reply:
-        log.warning("DELETE - NO REPLY")
-        await event.reply("⚠️ لازم تدير Reply على المنشور ثم تكتب /del")
+        await event.reply(
+            "⚠ لازم تدير Reply على المنشور ثم تكتب /del"
+        )
         return
 
+    # جيب الرسالة المجاب عليها
     replied = await event.get_reply_message()
 
     if not replied:
-        log.warning("DELETE - REPLY NOT FOUND")
-        await event.reply("❌ لم أجد الرسالة.")
+        await event.reply("❌ لم أجد الرسالة")
         return
 
-    current_chat = event.chat_id
-    current_message = replied.id
-    source_chat = None
-    source_message = None
+    source_message_id = replied.id
 
-    log.info("DELETE - CURRENT CHAT: %s, MESSAGE: %s, SOURCE: %s", current_chat, current_message, SOURCE)
+    logger.info(
+        "DELETE COMMAND | SOURCE=%s",
+        source_message_id
+    )
 
-    if current_chat == SOURCE:
-        log.info("DELETE - REPLYING TO SOURCE")
-        source_chat = SOURCE
-        source_message = current_message
-    else:
-        log.info("DELETE - SEARCHING IN DB")
-        found = get_source_from_target(current_chat, current_message)
-        if found:
-            source_chat, source_message = found
-            log.info("DELETE - FOUND IN DB: SOURCE=%s, MSG=%s", source_chat, source_message)
-
-    if source_chat is None:
-        log.error("DELETE - NOT FOUND")
-        await event.reply("❌ هذا المنشور غير مسجل عند البوت.")
-        return
-
-    deleted_count = 0
-    error_count = 0
-
+    # ========================================================
     # حذف من SOURCE
+    # ========================================================
+
     try:
-        await client.delete_messages(source_chat, source_message)
-        log.info("✅ SOURCE MESSAGE DELETED")
-        deleted_count += 1
+        await client.delete_messages(
+            SOURCE_CHAT_ID,
+            [source_message_id]
+        )
+        logger.info("✅ DELETED FROM SOURCE: %s", source_message_id)
     except Exception as e:
-        log.error("❌ SOURCE DELETE ERROR: %s", e)
-        error_count += 1
+        logger.error("❌ SOURCE DELETE ERROR: %s", e)
 
-    # حذف النسخ
-    copies = get_copies(source_chat, source_message)
-    log.info("FOUND %s COPIES", len(copies))
+    # ========================================================
+    # جيب المجموعات المرتبطة
+    # ========================================================
 
-    for target_chat, target_message in copies:
+    mappings = get_mappings(source_message_id)
+
+    logger.info(
+        "DELETE | SOURCE=%s | %s TARGETS",
+        source_message_id,
+        len(mappings)
+    )
+
+    # ========================================================
+    # حذف من جميع TARGETS
+    # ========================================================
+
+    deleted = 0
+
+    for target_chat_id, target_message_id in mappings:
+
         try:
-            await client.delete_messages(target_chat, target_message)
-            log.info("✅ COPY DELETED | %s | %s", target_chat, target_message)
-            deleted_count += 1
+            await client.delete_messages(
+                target_chat_id,
+                [target_message_id]
+            )
+
+            logger.info(
+                "✅ DELETED FROM TARGET: %s:%s",
+                target_chat_id,
+                target_message_id
+            )
+
+            deleted += 1
+
         except Exception as e:
-            log.error("❌ COPY DELETE ERROR: %s", e)
-            error_count += 1
+            logger.error(
+                "❌ TARGET DELETE ERROR | %s:%s | %s",
+                target_chat_id,
+                target_message_id,
+                e
+            )
 
-    # حذف من DB
-    delete_records(source_chat, source_message)
+        await asyncio.sleep(0.2)
 
-    # رسالة النجاح
-    try:
-        msg = f"✅ تم حذف المنشور!\n📊 تم حذف {deleted_count} رسالة"
-        if error_count > 0:
-            msg += f"\n⚠️ حدثت {error_count} أخطاء"
-        await event.reply(msg)
-    except:
-        pass
+    # ========================================================
+    # حذف من DATABASE
+    # ========================================================
+
+    delete_mappings(source_message_id)
+
+    # ========================================================
+    # حذف أمر /del
+    # ========================================================
 
     try:
         await event.delete()
-        await replied.delete()
-    except:
-        pass
+    except Exception as e:
+        logger.error("❌ DELETE COMMAND ERROR: %s", e)
 
-    log.info("✅ DELETE COMPLETE")
+    logger.info(
+        "✅ DELETE COMPLETE | DELETED=%s/%s",
+        deleted,
+        len(mappings)
+    )
+
 
 # ============================================================
-# START BOT
+# START
 # ============================================================
 
 async def main():
-    log.info("===================================")
-    log.info("LEX MERCHANT ADS BOT")
-    log.info("===================================")
-    log.info("API_ID: %s", API_ID)
-    log.info("SOURCE: %s", SOURCE)
-    log.info("TARGETS: %s", TARGETS)
-    log.info("OWNERS: %s", OWNER_IDS)
 
-    log.info("Starting bot with token...")
-    
-    try:
-        await client.start(bot_token=BOT_TOKEN)
-        me = await client.get_me()
-        log.info("✅ BOT STARTED: @%s | ID=%s", me.username, me.id)
-        log.info("✅ BOT IS RUNNING")
-        await client.run_until_disconnected()
-    except Exception as e:
-        log.error("❌ ERROR: %s", e)
-        raise
+    global BOT_ID
+
+    init_db()
+
+    logger.info(
+        "========================================"
+    )
+
+    logger.info(
+        "LEX AUTO PUBLISHER PRO"
+    )
+
+    logger.info(
+        "SOURCE: %s",
+        SOURCE_CHAT_ID
+    )
+
+    logger.info(
+        "TARGETS: %s",
+        TARGET_CHAT_IDS
+    )
+
+    # تسجيل دخول البوت
+    await client.start(
+        bot_token=BOT_TOKEN
+    )
+
+    me = await client.get_me()
+
+    BOT_ID = me.id
+
+    logger.info(
+        "BOT ID: %s",
+        BOT_ID
+    )
+
+    logger.info(
+        "USERNAME: @%s",
+        getattr(me, "username", "")
+    )
+
+    logger.info(
+        "STATUS: ONLINE"
+    )
+
+    logger.info(
+        "========================================"
+    )
+
+    await client.run_until_disconnected()
+
+
+# ============================================================
+# RUN
+# ============================================================
 
 if __name__ == "__main__":
-    asyncio.run(main())
- 
+
+    try:
+
+        asyncio.run(main())
+
+    except KeyboardInterrupt:
+
+        logger.info(
+            "LEX STOPPED"
+        )
+EOF
