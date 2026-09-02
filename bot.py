@@ -317,16 +317,21 @@ async def publish_message(event):
 )
 async def delete_command(event):
 
+    log.info("DELETE COMMAND TRIGGERED")
+
     # ========================================================
     # OWNER ONLY
     # ========================================================
 
     if not await is_allowed(event):
 
+        log.warning("DELETE DENIED - NOT OWNER")
+        
         try:
+            await event.reply("❌ أنت لست من المالكين!")
             await event.delete()
-        except Exception:
-            pass
+        except Exception as e:
+            log.error("Error deleting unauthorized command: %s", e)
 
         return
 
@@ -336,6 +341,8 @@ async def delete_command(event):
 
     if not event.is_reply:
 
+        log.warning("DELETE - NO REPLY")
+        
         await event.reply(
             "⚠️ لازم تدير Reply على المنشور ثم تكتب /del"
         )
@@ -346,11 +353,15 @@ async def delete_command(event):
 
     if not replied:
 
+        log.warning("DELETE - REPLY NOT FOUND")
+        
         await event.reply(
             "❌ لم أجد الرسالة."
         )
 
         return
+    
+    log.info("DELETE - FOUND REPLY: %s", replied.id)
 
     current_chat = event.chat_id
     current_message = replied.id
@@ -358,12 +369,17 @@ async def delete_command(event):
     source_chat = None
     source_message = None
 
+    log.info("DELETE - CURRENT CHAT: %s, CURRENT MESSAGE: %s", current_chat, current_message)
+    log.info("DELETE - SOURCE CHAT: %s", SOURCE)
+
     # ========================================================
     # إذا Reply على SOURCE
     # ========================================================
 
     if current_chat == SOURCE:
 
+        log.info("DELETE - REPLYING TO SOURCE")
+        
         source_chat = SOURCE
         source_message = current_message
 
@@ -373,6 +389,8 @@ async def delete_command(event):
 
     else:
 
+        log.info("DELETE - REPLYING TO TARGET, SEARCHING IN DB")
+        
         found = get_source_from_target(
             current_chat,
             current_message
@@ -381,6 +399,9 @@ async def delete_command(event):
         if found:
 
             source_chat, source_message = found
+            log.info("DELETE - FOUND IN DB: SOURCE_CHAT=%s, SOURCE_MSG=%s", source_chat, source_message)
+        else:
+            log.warning("DELETE - NOT FOUND IN DB")
 
     # ========================================================
     # غير معروف
@@ -388,6 +409,8 @@ async def delete_command(event):
 
     if source_chat is None:
 
+        log.error("DELETE - SOURCE CHAT IS NONE")
+        
         await event.reply(
             "❌ هذا المنشور غير مسجل عند البوت."
         )
@@ -400,6 +423,9 @@ async def delete_command(event):
         source_message
     )
 
+    deleted_count = 0
+    error_count = 0
+
     # ========================================================
     # حذف الأصل من SOURCE
     # ========================================================
@@ -411,14 +437,13 @@ async def delete_command(event):
             source_message
         )
 
-        log.info("SOURCE MESSAGE DELETED")
+        log.info("✅ SOURCE MESSAGE DELETED")
+        deleted_count += 1
 
     except Exception as e:
 
-        log.error(
-            "SOURCE DELETE ERROR: %s",
-            e
-        )
+        log.error("❌ SOURCE DELETE ERROR: %s", e)
+        error_count += 1
 
     # ========================================================
     # جلب النسخ
@@ -428,6 +453,8 @@ async def delete_command(event):
         source_chat,
         source_message
     )
+
+    log.info("FOUND %s COPIES TO DELETE", len(copies))
 
     # ========================================================
     # حذف النسخ من جميع TARGETS
@@ -443,28 +470,51 @@ async def delete_command(event):
             )
 
             log.info(
-                "COPY DELETED | %s | %s",
+                "✅ COPY DELETED | %s | %s",
                 target_chat,
                 target_message
             )
+            
+            deleted_count += 1
 
         except Exception as e:
 
             log.error(
-                "COPY DELETE ERROR | %s | %s | %s",
+                "❌ COPY DELETE ERROR | %s | %s | %s",
                 target_chat,
                 target_message,
                 e
             )
+            
+            error_count += 1
 
     # ========================================================
     # حذف سجل DB
     # ========================================================
 
-    delete_records(
-        source_chat,
-        source_message
-    )
+    try:
+        delete_records(
+            source_chat,
+            source_message
+        )
+        log.info("✅ DATABASE RECORDS DELETED")
+    except Exception as e:
+        log.error("❌ ERROR DELETING DATABASE RECORDS: %s", e)
+
+    # ========================================================
+    # إرسال رسالة نجاح للمستخدم
+    # ========================================================
+
+    try:
+        message_text = f"✅ تم حذف المنشور!\n"
+        message_text += f"📊 تم حذف {deleted_count} رسالة\n"
+        
+        if error_count > 0:
+            message_text += f"⚠️ حدثت {error_count} أخطاء"
+        
+        await event.reply(message_text)
+    except Exception as e:
+        log.error("ERROR SENDING REPLY: %s", e)
 
     # ========================================================
     # حذف أمر /del من جميع الأماكن
@@ -472,16 +522,18 @@ async def delete_command(event):
 
     try:
         await event.delete()
-    except Exception:
-        pass
+        log.info("✅ DELETE COMMAND DELETED")
+    except Exception as e:
+        log.error("ERROR DELETING COMMAND: %s", e)
 
     # حذف الرد إذا كان موجود
     try:
         await replied.delete()
-    except Exception:
-        pass
+        log.info("✅ REPLIED MESSAGE DELETED")
+    except Exception as e:
+        log.error("ERROR DELETING REPLIED MESSAGE: %s", e)
 
-    log.info("DELETE COMPLETE")
+    log.info("✅ DELETE COMPLETE - DELETED: %s, ERRORS: %s", deleted_count, error_count)
 
 
 # ============================================================
