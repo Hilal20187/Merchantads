@@ -1,2 +1,2 @@
-telethon
-python-dotenv
+python-telegram-bot
+flask
