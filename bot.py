@@ -1,84 +1,470 @@
-Import os
+import os
+import asyncio
 import logging
-from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
-from flask import Flask
-import threading
+import sqlite3
 
-TOKEN = os.getenv("BOT_TOKEN")
+from telethon import TelegramClient, events
+from telethon.errors import FloodWaitError, RPCError
+from dotenv import load_dotenv
 
-# معرفات الأشخاص المسموح لهم فقط بنشر الإعلانات (أنت وصديقك)
-AUTHORIZED_USER_IDS = [822007358, 2065539959]
+load_dotenv()
 
-# معرف مجموعة الإدارة الخاص بك
-ADMIN_GROUP_ID = -1003963584914
+# ============================================================
+# CONFIG
+# ============================================================
 
-# المجموعات المستهدفة للنشر
-TARGET_GROUP_IDS = [-1003952714985, -1002470205630, -1004407774851]
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+BOT_TOKEN = os.environ["BOT_TOKEN"]
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+DB_FILE = os.getenv("DB_FILE", "lex_publisher.db")
 
-async def handle_announcement(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    if not chat or chat.id != ADMIN_GROUP_ID:
+# المجموعة الأصلية
+SOURCE = int(os.environ["SOURCE"])
+
+# المجموعات المستهدفة
+TARGETS = [
+    int(x.strip())
+    for x in os.environ["TARGETS"].split(",")
+    if x.strip()
+]
+
+# IDs المسموح لهم باستعمال /del
+# مثال:
+# OWNER_IDS=123456789,987654321
+OWNER_IDS = {
+    int(x.strip())
+    for x in os.getenv("OWNER_IDS", "").split(",")
+    if x.strip()
+}
+
+# ============================================================
+# LOGGING
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+
+log = logging.getLogger("LEX")
+
+# ============================================================
+# DATABASE
+# ============================================================
+
+db = sqlite3.connect(DB_FILE, check_same_thread=False)
+db.execute("""
+CREATE TABLE IF NOT EXISTS published (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_chat INTEGER NOT NULL,
+    source_msg INTEGER NOT NULL,
+    target_chat INTEGER NOT NULL,
+    target_msg INTEGER NOT NULL
+)
+""")
+
+db.execute("""
+CREATE INDEX IF NOT EXISTS idx_source
+ON published(source_chat, source_msg)
+""")
+
+db.execute("""
+CREATE INDEX IF NOT EXISTS idx_target
+ON published(target_chat, target_msg)
+""")
+
+db.commit()
+
+
+def save_copy(source_chat, source_msg, target_chat, target_msg):
+    db.execute(
+        """
+        INSERT INTO published
+        (source_chat, source_msg, target_chat, target_msg)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            source_chat,
+            source_msg,
+            target_chat,
+            target_msg
+        )
+    )
+    db.commit()
+
+
+def get_source_from_target(target_chat, target_msg):
+    row = db.execute(
+        """
+        SELECT source_chat, source_msg
+        FROM published
+        WHERE target_chat = ?
+        AND target_msg = ?
+        LIMIT 1
+        """,
+        (target_chat, target_msg)
+    ).fetchone()
+
+    return row
+
+
+def get_copies(source_chat, source_msg):
+    return db.execute(
+        """
+        SELECT target_chat, target_msg
+        FROM published
+        WHERE source_chat = ?
+        AND source_msg = ?
+        """,
+        (source_chat, source_msg)
+    ).fetchall()
+
+
+def delete_records(source_chat, source_msg):
+    db.execute(
+        """
+        DELETE FROM published
+        WHERE source_chat = ?
+        AND source_msg = ?
+        """,
+        (source_chat, source_msg)
+    )
+    db.commit()
+
+
+# ============================================================
+# TELEGRAM CLIENT
+# ============================================================
+
+client = TelegramClient(
+    "merchantads_bot",
+    API_ID,
+    API_HASH
+)
+
+
+# ============================================================
+# PERMISSION
+# ============================================================
+
+async def is_allowed(event):
+    """
+    فقط OWNER_IDS يقدر يستعمل /del.
+    """
+
+    if not OWNER_IDS:
+        return False
+
+    sender = await event.get_sender()
+
+    if not sender:
+        return False
+
+    return sender.id in OWNER_IDS
+
+
+# ============================================================
+# AUTO PUBLISH
+# ============================================================
+
+@client.on(events.NewMessage(chats=SOURCE))
+async def publish_message(event):
+
+    message = event.message
+
+    # لا تنشر أوامر البوت
+    if message.raw_text:
+        text = message.raw_text.strip().lower()
+
+        if text.startswith("/del"):
+            return
+
+    # تجاهل رسائل الخدمة
+    if message.action:
         return
 
-    # التحقق من أن المرسل شخص مصرح له حصرياً
-    user = update.effective_user
-    if not user or user.id not in AUTHORIZED_USER_IDS:
-        return
+    log.info(
+        "NEW MESSAGE | source=%s | msg=%s",
+        SOURCE,
+        message.id
+    )
 
-    message = update.effective_message
-    if not message:
-        return
+    for target in TARGETS:
 
-    text_to_send = message.text or message.caption
-    photo = message.photo
-
-    # إعادة إعادة إرسال الرسالة إلى كل المجموعات المستهدفة
-    for group_id in TARGET_GROUP_IDS:
         try:
-            if photo:
-                await context.bot.send_photo(
-                    chat_id=group_id,
-                    photo=photo[-1].file_id,
-                    caption=text_to_send or ""
-                )
-            elif text_to_send:
-                await context.bot.send_message(
-                    chat_id=group_id,
-                    text=text_to_send
-                )
-            logging.info(f"تم بنجاح نشر الإعلان في المجموعة: {group_id}")
+
+            # Forward للرسالة
+            result = await client.forward_messages(
+                entity=target,
+                messages=message,
+                from_peer=SOURCE
+            )
+
+            # Telethon يرجع Message أو list
+            if isinstance(result, list):
+                if result:
+                    target_message = result[0]
+                else:
+                    continue
+            else:
+                target_message = result
+
+            save_copy(
+                SOURCE,
+                message.id,
+                target,
+                target_message.id
+            )
+
+            log.info(
+                "PUBLISHED | %s -> %s | %s -> %s",
+                SOURCE,
+                target,
+                message.id,
+                target_message.id
+            )
+
+        except FloodWaitError as e:
+
+            log.warning(
+                "FloodWait: sleeping %s seconds",
+                e.seconds
+            )
+
+            await asyncio.sleep(e.seconds)
+
+        except RPCError as e:
+
+            log.error(
+                "Telegram error target=%s: %s",
+                target,
+                e
+            )
+
         except Exception as e:
-            logging.error(f"فشل النشر إلى المجموعة {group_id}: {e}")
 
-def run_bot():
-    if not TOKEN:
-        print("خطأ: لم يتم العثور على BOT_TOKEN!")
+            log.exception(
+                "Publish error target=%s: %s",
+                target,
+                e
+            )
+
+
+# ============================================================
+# DELETE COMMAND
+# ============================================================
+
+@client.on(events.NewMessage(pattern=r"^/del(?:@\w+)?$", chats=None))
+async def delete_command(event):
+
+    # تحقق من صاحب الأمر
+    if not await is_allowed(event):
+
+        await event.reply(
+            "❌ ما عندكش صلاحية استعمال /del"
+        )
+
         return
-    
-    application = ApplicationBuilder().token(TOKEN).build()
-    
-    # التقاط جميع الرسائل بلا استثناء داخل شات الإدارة
-    application.add_handler(MessageHandler(filters.ALL, handle_announcement))
-    
-    print("البوت يعمل ويتلتقط كافة الرسائل الآن...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-app = Flask(__name__)
+    # لازم Reply
+    if not event.is_reply:
 
-@app.route('/')
-def home():
-    return "البوت يعمل بنجاح!"
+        await event.reply(
+            "⚠️ دير Reply على المنشور اللي حاب تحذفو ثم اكتب:\n\n"
+            "/del"
+        )
 
-def run_server():
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
+        return
 
-if __name__ == '__main__':
-    bot_thread = threading.Thread(target=run_bot)
-    bot_thread.daemon = True
-    bot_thread.start()
-    
-    run_server() 
+    replied = await event.get_reply_message()
+
+    if not replied:
+
+        await event.reply(
+            "❌ ما قدرتش نلقى الرسالة."
+        )
+
+        return
+
+    current_chat = event.chat_id
+    current_msg = replied.id
+
+    source_chat = None
+    source_msg = None
+
+    # ========================================================
+    # الحالة 1:
+    # Reply على المنشور الأصلي في SOURCE
+    # ========================================================
+
+    if current_chat == SOURCE:
+
+        source_chat = SOURCE
+        source_msg = current_msg
+
+    # ========================================================
+    # الحالة 2:
+    # Reply على نسخة منشورة في TARGET
+    # ========================================================
+
+    else:
+
+        found = get_source_from_target(
+            current_chat,
+            current_msg
+        )
+
+        if found:
+
+            source_chat, source_msg = found
+
+    # ========================================================
+    # إذا ما لقيناش المنشور
+    # ========================================================
+
+    if source_chat is None:
+
+        await event.reply(
+            "❌ هذي الرسالة ما عندهاش نسخة مسجلة عند البوت."
+        )
+
+        return
+
+    log.info(
+        "DELETE REQUEST | source=%s | msg=%s",
+        source_chat,
+        source_msg
+    )
+
+    # ========================================================
+    # حذف الأصل
+    # ========================================================
+
+    try:
+
+        await client.delete_messages(
+            source_chat,
+            source_msg
+        )
+
+        log.info(
+            "DELETED SOURCE | %s | %s",
+            source_chat,
+            source_msg
+        )
+
+    except Exception as e:
+
+        log.error(
+            "Could not delete source: %s",
+            e
+        )
+
+    # ========================================================
+    # جلب النسخ
+    # ========================================================
+
+    copies = get_copies(
+        source_chat,
+        source_msg
+    )
+
+    deleted = 0
+
+    # ========================================================
+    # حذف جميع النسخ
+    # ========================================================
+
+    for target_chat, target_msg in copies:
+
+        try:
+
+            await client.delete_messages(
+                target_chat,
+                target_msg
+            )
+
+            deleted += 1
+
+            log.info(
+                "DELETED COPY | %s | %s",
+                target_chat,
+                target_msg
+            )
+
+        except Exception as e:
+
+            log.error(
+                "Could not delete copy %s/%s: %s",
+                target_chat,
+                target_msg,
+                e
+            )
+
+    # ========================================================
+    # حذف معلومات SQLite
+    # ========================================================
+
+    delete_records(
+        source_chat,
+        source_msg
+    )
+
+    # ========================================================
+    # حذف أمر /del نفسه
+    # ========================================================
+
+    try:
+
+        await event.delete()
+
+    except Exception:
+        pass
+
+    log.info(
+        "DELETE COMPLETE | source=%s | msg=%s | copies=%s",
+        source_chat,
+        source_msg,
+        deleted
+    )
+
+
+# ============================================================
+# START
+# ============================================================
+
+async def main():
+
+    log.info("========================================")
+    log.info("LEX MERCHANT ADS BOT")
+    log.info("========================================")
+
+    log.info("SOURCE: %s", SOURCE)
+    log.info("TARGETS: %s", TARGETS)
+    log.info("OWNER_IDS: %s", OWNER_IDS)
+
+    await client.start(
+        bot_token=BOT_TOKEN
+    )
+
+    me = await client.get_me()
+
+    log.info(
+        "BOT STARTED: @%s (%s)",
+        me.username,
+        me.id
+    )
+
+    log.info("Bot is running...")
+
+    await client.run_until_disconnected()
+
+
+if __name__ == "__main__":
+
+    try:
+        asyncio.run(main())
+
+    except KeyboardInterrupt:
+        log.info("Bot stopped.")
