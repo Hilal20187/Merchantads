@@ -5,6 +5,7 @@ import sqlite3
 
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError, RPCError
+from telethon.tl.types import Message
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -19,22 +20,12 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 
 DB_FILE = os.getenv("DB_FILE", "lex_publisher.db")
 
-# ============================================================
-# SOURCE
-# إذا كانت SOURCE موجودة في Railway يستعملها
-# وإذا ما كانتش موجودة يستعمل هذه مباشرة
-# ============================================================
-
 SOURCE = int(
     os.getenv(
         "SOURCE",
         "-1004333211848"
     )
 )
-
-# ============================================================
-# TARGETS
-# ============================================================
 
 TARGETS_STRING = os.getenv(
     "TARGETS",
@@ -46,10 +37,6 @@ TARGETS = [
     for x in TARGETS_STRING.split(",")
     if x.strip()
 ]
-
-# ============================================================
-# OWNERS
-# ============================================================
 
 OWNER_IDS_STRING = os.getenv("OWNER_IDS", "")
 
@@ -201,6 +188,47 @@ async def is_allowed(event):
 
 
 # ============================================================
+# COPY MESSAGE FUNCTION (بدون Forward)
+# ============================================================
+
+async def copy_message_without_forward(message, target):
+    """
+    تنسخ الرسالة بدون علامة Forwarded from
+    """
+    try:
+        # الحصول على نص الرسالة
+        text = message.text or message.caption or ""
+        
+        # التحقق من الرابط (إذا كان الرسالة موجودة فقط)
+        if message.web_preview:
+            # إذا كانت الرسالة تحتوي على رابط بمعاينة
+            result = await client.send_message(
+                entity=target,
+                message=text,
+                link_preview=True
+            )
+        elif message.media:
+            # إذا كانت الرسالة تحتوي على وسائط (صور، فيديو، إلخ)
+            result = await client.send_file(
+                entity=target,
+                file=message.media,
+                caption=text
+            )
+        else:
+            # رسالة نصية فقط
+            result = await client.send_message(
+                entity=target,
+                message=text
+            )
+        
+        return result
+
+    except Exception as e:
+        log.error("Error copying message: %s", e)
+        return None
+
+
+# ============================================================
 # PUBLISH
 # ============================================================
 
@@ -231,23 +259,11 @@ async def publish_message(event):
 
         try:
 
-            # نسخ الرسالة الأصلية فقط (Forward بدون اسم المرسل)
-            result = await client.forward_messages(
-                entity=target,
-                messages=message.id,
-                from_peer=SOURCE
-            )
+            # نسخ الرسالة بدون Forward
+            copied_message = await copy_message_without_forward(message, target)
 
-            if isinstance(result, list):
-
-                if not result:
-                    continue
-
-                copied_message = result[0]
-
-            else:
-
-                copied_message = result
+            if not copied_message:
+                continue
 
             save_copy(
                 SOURCE,
@@ -296,7 +312,7 @@ async def publish_message(event):
 
 @client.on(
     events.NewMessage(
-        pattern=r"^/del(?:@\w+)?$"
+        pattern=r"^/del"
     )
 )
 async def delete_command(event):
@@ -385,7 +401,7 @@ async def delete_command(event):
     )
 
     # ========================================================
-    # حذف الأصل
+    # حذف الأصل من SOURCE
     # ========================================================
 
     try:
@@ -395,7 +411,7 @@ async def delete_command(event):
             source_message
         )
 
-        log.info("SOURCE DELETED")
+        log.info("SOURCE MESSAGE DELETED")
 
     except Exception as e:
 
@@ -414,7 +430,7 @@ async def delete_command(event):
     )
 
     # ========================================================
-    # حذف النسخ
+    # حذف النسخ من جميع TARGETS
     # ========================================================
 
     for target_chat, target_message in copies:
@@ -451,7 +467,7 @@ async def delete_command(event):
     )
 
     # ========================================================
-    # حذف أمر /del
+    # حذف أمر /del من جميع الأماكن
     # ========================================================
 
     try:
@@ -459,26 +475,11 @@ async def delete_command(event):
     except Exception:
         pass
 
-    # ========================================================
-    # حذف أمر /del من SOURCE إذا كان من مجموعة أخرى
-    # ========================================================
-
-    if event.chat_id != SOURCE:
-
-        try:
-            await client.delete_messages(
-                SOURCE,
-                message.id
-            )
-
-            log.info("SOURCE DELETE COMMAND SUCCESS")
-
-        except Exception as e:
-
-            log.error(
-                "SOURCE DELETE COMMAND ERROR: %s",
-                e
-            )
+    # حذف الرد إذا كان موجود
+    try:
+        await replied.delete()
+    except Exception:
+        pass
 
     log.info("DELETE COMPLETE")
 
