@@ -55,9 +55,10 @@ BOT_TOKEN = required("BOT_TOKEN")
 OWNER_ID = integer("OWNER_ID")
 SOURCE_CHAT_ID = integer("SOURCE_CHAT_ID")
 
+# تغيير اسم قاعدة البيانات
 DB_FILE = os.getenv(
     "DB_FILE",
-    "lex_publisher.db"
+    "publisher.db"
 ).strip()
 
 
@@ -161,6 +162,10 @@ USER_BLOCKED_TARGETS = parse_blocked_targets(
     os.getenv("USER_BLOCKED_TARGETS", "")
 )
 
+
+# ============================================================
+# DATABASE
+# ============================================================
 
 db = sqlite3.connect(
     DB_FILE,
@@ -765,7 +770,7 @@ async def source_message_deleted(event):
 
 @bot_client.on(
     events.NewMessage(
-        pattern=r"^/id(?:@\w+)?$"
+        pattern=r"^/id$"
     )
 )
 async def command_id(event):
@@ -788,7 +793,7 @@ async def command_id(event):
 
 @bot_client.on(
     events.NewMessage(
-        pattern=r"^/status(?:@\w+)?$"
+        pattern=r"^/status$"
     )
 )
 async def command_status(event):
@@ -835,14 +840,18 @@ async def command_status(event):
 
 # ============================================================
 # /del
-# /del@Merchantdz_bot
+#
+# /del
 # /del 123456
 # Reply + /del
+#
+# لا يوجد دعم لـ:
+# /del@Merchantadss_bot
 # ============================================================
 
 @bot_client.on(
     events.NewMessage(
-        pattern=r"^/del(?:@\w+)?(?:\s+(\d+))?$"
+        pattern=r"^/del(?:\s+(\d+))?$"
     )
 )
 async def command_delete(event):
@@ -865,6 +874,7 @@ async def command_delete(event):
 
         message_id_text = None
 
+    # /del 123456
     if message_id_text:
 
         try:
@@ -877,6 +887,7 @@ async def command_delete(event):
 
             source_msg_id = None
 
+    # Reply + /del
     if source_msg_id is None:
 
         try:
@@ -895,6 +906,7 @@ async def command_delete(event):
                 e
             )
 
+    # إذا لم يتم تحديد رسالة
     if source_msg_id is None:
 
         try:
@@ -957,6 +969,7 @@ async def command_delete(event):
         source_msg_id
     )
 
+    # حذف الرسالة الأصلية
     try:
 
         await bot_client.delete_messages(
@@ -971,6 +984,7 @@ async def command_delete(event):
             e
         )
 
+    # حذف أمر /del نفسه
     try:
 
         await bot_client.delete_messages(
@@ -988,7 +1002,7 @@ async def command_delete(event):
 
 @bot_client.on(
     events.NewMessage(
-        pattern=r"^/help(?:@\w+)?$"
+        pattern=r"^/help$"
     )
 )
 async def command_help(event):
@@ -1004,7 +1018,6 @@ async def command_help(event):
         "/id\n"
         "/status\n"
         "/del\n"
-        "/del@Merchantadss_bot\n"
         "/del 123456\n"
         "/help\n\n"
         "Reply to a post and send /del "
@@ -1106,7 +1119,6 @@ if __name__ == "__main__":
 
         logging.info(
             "Stopped."
-
         )
 
     except Exception:
@@ -1114,4 +1126,5 @@ if __name__ == "__main__":
         logging.exception(
             "Fatal error"
         )
- 
+
+ملاحظة: غيّرت "lex_publisher.db" إلى "publisher.db". إذا كنت تريد حذف قاعدة البيانات بالكامل من المشروع وعدم إنشاء أي ".db" نهائيًا، فهذا مختلف ويحتاج إزالة نظام الـ mapping، وبالتالي سيؤثر على "/del" و"reply" والحذف التلقائي.
