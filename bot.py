@@ -19,16 +19,23 @@ logging.basicConfig(
 
 def required(name):
     value = os.getenv(name, "").strip()
+
     if not value:
-        raise RuntimeError(f"Missing required variable: {name}")
+        raise RuntimeError(
+            f"Missing required variable: {name}"
+        )
+
     return value
 
 
 def integer(name):
     try:
         return int(required(name))
+
     except Exception:
-        raise RuntimeError(f"{name} must be a valid integer")
+        raise RuntimeError(
+            f"{name} must be a valid integer"
+        )
 
 
 def int_set(value):
@@ -42,8 +49,12 @@ def int_set(value):
 
         try:
             result.add(int(item))
+
         except Exception:
-            logging.warning("Invalid integer ignored: %s", item)
+            logging.warning(
+                "Invalid integer ignored: %s",
+                item
+            )
 
     return result
 
@@ -55,7 +66,11 @@ BOT_TOKEN = required("BOT_TOKEN")
 OWNER_ID = integer("OWNER_ID")
 SOURCE_CHAT_ID = integer("SOURCE_CHAT_ID")
 
-# تغيير اسم قاعدة البيانات
+
+# ============================================================
+# DATABASE
+# ============================================================
+
 DB_FILE = os.getenv(
     "DB_FILE",
     "publisher.db"
@@ -76,8 +91,14 @@ TARGET_CHAT_IDS = list(
 )
 
 if not TARGET_CHAT_IDS:
-    raise RuntimeError("TARGET_CHAT_IDS is empty")
+    raise RuntimeError(
+        "TARGET_CHAT_IDS is empty"
+    )
 
+
+# ============================================================
+# PERSONAL CHANNELS
+# ============================================================
 
 def parse_personal_channels(value):
     result = {}
@@ -113,6 +134,10 @@ PERSONAL_CHANNELS = parse_personal_channels(
 )
 
 
+# ============================================================
+# BLOCKED TARGETS
+# ============================================================
+
 def parse_blocked_targets(value):
     result = {}
 
@@ -129,11 +154,13 @@ def parse_blocked_targets(value):
 
         try:
             user_id = int(user_part.strip())
+
         except Exception:
             logging.warning(
                 "Invalid blocked user: %s",
                 user_part
             )
+
             continue
 
         blocked = set()
@@ -146,6 +173,7 @@ def parse_blocked_targets(value):
 
             try:
                 blocked.add(int(target))
+
             except Exception:
                 logging.warning(
                     "Invalid blocked target: %s",
@@ -164,7 +192,7 @@ USER_BLOCKED_TARGETS = parse_blocked_targets(
 
 
 # ============================================================
-# DATABASE
+# SQLITE
 # ============================================================
 
 db = sqlite3.connect(
@@ -197,6 +225,7 @@ async def save_mapping(
     target_msg_id
 ):
     async with db_lock:
+
         db.execute(
             """
             INSERT OR REPLACE INTO published_messages
@@ -218,7 +247,9 @@ async def save_mapping(
 
 
 async def get_mappings(source_msg_id):
+
     async with db_lock:
+
         cursor = db.execute(
             """
             SELECT
@@ -234,7 +265,9 @@ async def get_mappings(source_msg_id):
 
 
 async def delete_all_mappings(source_msg_id):
+
     async with db_lock:
+
         db.execute(
             """
             DELETE FROM published_messages
@@ -259,7 +292,6 @@ bot_client = TelegramClient(
 
 # ============================================================
 # USER CLIENT
-# Dedicated account used for Send As
 # ============================================================
 
 USER_SESSION = os.getenv(
@@ -284,9 +316,13 @@ user_client = TelegramClient(
 # TARGETS
 # ============================================================
 
-def get_targets_for_user(sender_id: Optional[int]):
+def get_targets_for_user(
+    sender_id: Optional[int]
+):
 
-    targets = list(TARGET_CHAT_IDS)
+    targets = list(
+        TARGET_CHAT_IDS
+    )
 
     if sender_id is not None:
 
@@ -348,18 +384,18 @@ async def send_with_send_as(
             e.seconds
         )
 
-        await asyncio.sleep(e.seconds)
+        await asyncio.sleep(
+            e.seconds
+        )
 
         try:
 
-            sent = await user_client.send_message(
+            return await user_client.send_message(
                 entity=target_chat_id,
                 message=message,
                 reply_to=reply_to,
                 send_as=target_chat_id
             )
-
-            return sent
 
         except Exception as retry_error:
 
@@ -405,7 +441,9 @@ async def send_with_bot(
             e.seconds
         )
 
-        await asyncio.sleep(e.seconds)
+        await asyncio.sleep(
+            e.seconds
+        )
 
         try:
 
@@ -565,7 +603,7 @@ async def publish_message(
 
 
 # ============================================================
-# CONTROL COMMANDS
+# CONTROL COMMAND
 # ============================================================
 
 def is_control_command(message):
@@ -586,13 +624,11 @@ def is_control_command(message):
 
         return False
 
-    return first_word.startswith(
-        (
-            "/del",
-            "/status",
-            "/id",
-            "/help"
-        )
+    return first_word in (
+        "/del",
+        "/status",
+        "/id",
+        "/help"
     )
 
 
@@ -841,11 +877,12 @@ async def command_status(event):
 # ============================================================
 # /del
 #
+# Supported:
 # /del
 # /del 123456
 # Reply + /del
 #
-# لا يوجد دعم لـ:
+# Not supported:
 # /del@Merchantadss_bot
 # ============================================================
 
@@ -874,7 +911,6 @@ async def command_delete(event):
 
         message_id_text = None
 
-    # /del 123456
     if message_id_text:
 
         try:
@@ -887,7 +923,6 @@ async def command_delete(event):
 
             source_msg_id = None
 
-    # Reply + /del
     if source_msg_id is None:
 
         try:
@@ -906,7 +941,6 @@ async def command_delete(event):
                 e
             )
 
-    # إذا لم يتم تحديد رسالة
     if source_msg_id is None:
 
         try:
@@ -969,7 +1003,6 @@ async def command_delete(event):
         source_msg_id
     )
 
-    # حذف الرسالة الأصلية
     try:
 
         await bot_client.delete_messages(
@@ -984,7 +1017,6 @@ async def command_delete(event):
             e
         )
 
-    # حذف أمر /del نفسه
     try:
 
         await bot_client.delete_messages(
@@ -1036,7 +1068,7 @@ async def startup():
     )
 
     logging.info(
-        "LEX AUTO PUBLISHER PRO - BOT 2"
+        "LEX AUTO PUBLISHER PRO"
     )
 
     logging.info(
@@ -1125,6 +1157,4 @@ if __name__ == "__main__":
 
         logging.exception(
             "Fatal error"
-        )
-
-ملاحظة: غيّرت "lex_publisher.db" إلى "publisher.db". إذا كنت تريد حذف قاعدة البيانات بالكامل من المشروع وعدم إنشاء أي ".db" نهائيًا، فهذا مختلف ويحتاج إزالة نظام الـ mapping، وبالتالي سيؤثر على "/del" و"reply" والحذف التلقائي.
+    ) 
