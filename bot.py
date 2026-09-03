@@ -1004,7 +1004,7 @@ async def command_help(event):
         "/id\n"
         "/status\n"
         "/del\n"
-        "/del@Merchantdz_bot\n"
+        "/del@Merchantadss_bot\n"
         "/del 123456\n"
         "/help\n\n"
         "Reply to a post and send /del "
