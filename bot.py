@@ -254,13 +254,20 @@ client = TelegramClient(
 # RETRY SYSTEM
 # ============================================================
 
+# عدد المحاولات القصوى باش الكود ما يبقاش عالق فلوب لانهائي
+# إلا كان الخطأ ديما كيتكرر (بحال خطأ فالمنطق ماشي فالشبكة)
+MAX_RETRIES = 5
+
+
 async def run_with_retry(
     func,
     *args,
     **kwargs
 ):
 
-    while True:
+    attempt = 0
+
+    while attempt < MAX_RETRIES:
 
         try:
 
@@ -282,8 +289,12 @@ async def run_with_retry(
 
         except RPCError as e:
 
+            attempt += 1
+
             logger.warning(
-                "RPC ERROR: %s",
+                "RPC ERROR (attempt %s/%s): %s",
+                attempt,
+                MAX_RETRIES,
                 e
             )
 
@@ -291,12 +302,24 @@ async def run_with_retry(
 
         except Exception as e:
 
+            attempt += 1
+
             logger.exception(
-                "RETRY ERROR: %s",
+                "RETRY ERROR (attempt %s/%s): %s",
+                attempt,
+                MAX_RETRIES,
                 e
             )
 
             await asyncio.sleep(2)
+
+    logger.error(
+        "GIVING UP AFTER %s RETRIES: %s",
+        MAX_RETRIES,
+        getattr(func, "__name__", func)
+    )
+
+    return None
 
 
 # ============================================================
@@ -413,19 +436,36 @@ async def source_message_edited(event):
 
             try:
 
-                await run_with_retry(
+                # ------------------------------------------------
+                # مهم: خاصنا نصيفطو النص (وليس Message object)
+                # مع entities باش يبقى الفورماتينغ (bold, links...)
+                # ------------------------------------------------
+
+                result = await run_with_retry(
                     client.edit_message,
                     target_chat_id,
                     target_message_id,
-                    event.message
+                    event.message.text or "",
+                    formatting_entities=event.message.entities
                 )
 
-                logger.info(
-                    "EDITED | SOURCE=%s | TARGET=%s | MSG=%s",
-                    event.id,
-                    target_chat_id,
-                    target_message_id
-                )
+                if result is not None:
+
+                    logger.info(
+                        "EDITED | SOURCE=%s | TARGET=%s | MSG=%s",
+                        event.id,
+                        target_chat_id,
+                        target_message_id
+                    )
+
+                else:
+
+                    logger.warning(
+                        "EDIT GAVE UP | SOURCE=%s | TARGET=%s | MSG=%s",
+                        event.id,
+                        target_chat_id,
+                        target_message_id
+                    )
 
             except Exception as e:
 
@@ -831,12 +871,26 @@ def register_special_channel(
 
             for target_chat_id, target_message_id in mappings:
 
-                await run_with_retry(
+                # ----------------------------------------------
+                # نفس التصحيح: نص + entities بدل Message كامل
+                # ----------------------------------------------
+
+                result = await run_with_retry(
                     client.edit_message,
                     target_chat_id,
                     target_message_id,
-                    event.message
+                    event.message.text or "",
+                    formatting_entities=event.message.entities
                 )
+
+                if result is not None:
+
+                    logger.info(
+                        "SPECIAL EDITED | CHANNEL=%s | TARGET=%s | MSG=%s",
+                        channel_id,
+                        target_chat_id,
+                        target_message_id
+                    )
 
                 await asyncio.sleep(0.3)
 
@@ -987,4 +1041,4 @@ if __name__ == "__main__":
 
         logger.info(
             "BOT STOPPED"
-            ) 
+            )
